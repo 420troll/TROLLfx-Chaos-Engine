@@ -115,6 +115,15 @@ NVMWrapper nvm;  // interface for loading/storing config data
 static std::atomic<bool> panelReady{false};
 static std::atomic<uint32_t> dspMeter{0}; // low byte: percent, bit 8: deadline fault
 static bool cpuView=false;
+static std::atomic<uint32_t> meterLevels{0}, cycleCountsA{0},cycleCountsB{0}, callbackRate{0}, faultCount{0}, maxCallbackUs{0}, timerStatus{0};
+static std::atomic<uint32_t> phaseA{0},phaseB{0};
+static uint32_t cycleA=0,cycleB=0,windowTicks=0,windowMax=0;
+static uint16_t peaks[4]={0,0,0,0};
+static uint32_t seenCycleA=0,seenCycleB=0,lastCycleA=0,lastCycleB=0;
+static uint32_t lastLedMs=0,selectionMs=0;
+static int lastA=-1,lastB=-1;
+static bool lastActive=true;
+static void write_selection_ring(uint32_t now);
 static constexpr uint32_t kRun=65536u;
 static std::atomic<uint32_t> dcOverride{kRun};
 void poll_serial();
@@ -149,7 +158,8 @@ void setup() {
     a.follow_mode=DISABLED;
     b.follow_mode=DISABLED;
     leds.begin();
-    leds.setBrightness(0x70);
+    leds.setBrightness(255);
+    leds.fill(0);leds.show();
 
     // Factory calibration read only. No EEPROM writes or calibration entry.
     pinMode(FLW_BTN, INPUT);
@@ -165,10 +175,17 @@ void loop() {
     poll_serial();
     ring.update(a.mod_idx, b.mod_idx);
     
-    ring.write_leds(leds);
-    if(cpuView)write_cpu_ring();
-    write_other_leds();
-    leds.show();
+    const uint32_t now=millis();
+    if(ring.a_idx_wo_cv!=lastA||ring.b_idx_wo_cv!=lastB||ring.a_is_active!=lastActive){
+        lastA=ring.a_idx_wo_cv;lastB=ring.b_idx_wo_cv;lastActive=ring.a_is_active;selectionMs=now;
+    }
+    if(now-lastLedMs>=33u){
+        lastLedMs=now;
+        leds.fill(0);
+        if(cpuView)write_cpu_ring();else write_selection_ring(now);
+        write_other_leds();
+        leds.show();
+    }
 }
 
 
@@ -193,8 +210,10 @@ void setup1() {
 
     // timer setup
     int64_t timer_period_us = -int64_t(dspPeriodUs);  // negative means include execution time in period
-    alarm_pool_t* pool = alarm_pool_create(0, 1);
-    alarm_pool_add_repeating_timer_us(pool, timer_period_us, pwm_timer_ISR, NULL, &pwm_timer);
+    alarm_pool_t* pool = alarm_pool_create_with_unused_hardware_alarm(1);
+    bool ok=pool&&alarm_pool_add_repeating_timer_us(pool, timer_period_us, pwm_timer_ISR, NULL, &pwm_timer);
+    timerStatus.store(ok?1u:2u,std::memory_order_relaxed);
+    if(!ok)return;
 
     // interrupt setup
     attachInterrupt(digitalPinToInterrupt(SIG_IN_A), a_sync_ISR, FALLING);
@@ -212,8 +231,11 @@ bool pwm_timer_ISR(repeating_timer_t* rt) {
     if(!tickSeen){windowStart=begin;tickSeen=true;}
     lastTick=begin;
     // increment phasors etc.
+    const bool ar=a.running,br=b.running;
     a.update();
     b.update();
+    if(ar&&a.core.overflow)++cycleA;
+    if(br&&b.core.overflow)++cycleB;
 
     // create new outputs
     a.generate();
@@ -232,39 +254,68 @@ bool pwm_timer_ISR(repeating_timer_t* rt) {
     pwm_set_gpio_level(PRI_OUT_B,video_cv::duty(2,bp));
     pwm_set_gpio_level(SEC_OUT_B,video_cv::duty(3,bs));
 
+    const uint16_t vals[4]={ap,as,bp,bs};
+    // Peak envelope from actual normalized values written to PWM, independent of PWM codes.
+    for(uint8_t i=0;i<4;i++){
+        if(vals[i]>=peaks[i])peaks[i]=vals[i];
+        else if(peaks[i]>8)peaks[i]-=8;
+        else peaks[i]=0;
+    }
+    // Publish only once per ~1.4 ms, not on every sample.
+    if((++windowTicks&63u)==0){
+        meterLevels.store((uint32_t(peaks[0]>>8))|(uint32_t(peaks[1]>>8)<<8)|(uint32_t(peaks[2]>>8)<<16)|(uint32_t(peaks[3]>>8)<<24),std::memory_order_relaxed);
+        cycleCountsA.store(cycleA,std::memory_order_relaxed);cycleCountsB.store(cycleB,std::memory_order_relaxed);
+        phaseA.store(a.core.pha,std::memory_order_relaxed);phaseB.store(b.core.pha,std::memory_order_relaxed);
+    }
     gpio_put(TRIG_OUT_A, !a.end_of_cycle);
     gpio_put(TRIG_OUT_B, !b.end_of_cycle);
     const uint32_t elapsed=time_us_32()-begin;
     workUs+=elapsed;
+    if(elapsed>windowMax)windowMax=elapsed;
     if(elapsed>=dspPeriodUs){++deadlineFaults;++missedTotal;}
     const uint32_t span=begin-windowStart;
     if(span>=250000u){
         uint32_t percent=workUs*100u/span;
         if(percent>100)percent=100;
         dspMeter.store(percent|(deadlineFaults?256u:0u),std::memory_order_relaxed);
-        workUs=0;deadlineFaults=0;windowStart=begin;
+        callbackRate.store(uint32_t(uint64_t(windowTicks)*1000000ull/span),std::memory_order_relaxed);
+        faultCount.store(deadlineFaults,std::memory_order_relaxed);
+        maxCallbackUs.store(windowMax,std::memory_order_relaxed);
+        workUs=0;deadlineFaults=0;windowTicks=0;windowMax=0;windowStart=begin;
     }
     return true;
 }
 
-void write_other_leds() {
-    uint8_t a_brightness=a.val>>8, a_mod_brightness=mod_a.val>>8;
-    uint8_t b_brightness=b.val>>8, b_mod_brightness=mod_b.val>>8;
+static uint32_t side_color(bool sideA,uint8_t v){
+    return sideA?leds.Color(v,uint8_t(uint16_t(v)*55/100),0):leds.Color(0,0,v);
+}
+static void write_selection_ring(uint32_t now){
+    static const uint8_t palette[16][3]={
+      {255,255,255},{220,0,180},{255,70,0},{255,220,0},
+      {120,255,0},{0,220,100},{0,210,255},{70,80,255},
+      {160,60,255},{255,0,60},{255,130,80},{30,220,180},
+      {170,255,90},{80,170,255},{230,100,220},{255,255,80}};
+    uint8_t ai=uint8_t(ring.a_idx_wo_cv)&15u,bi=uint8_t(ring.b_idx_wo_cv)&15u;
+    uint8_t selected=ring.a_is_active?ai:bi,other=ring.a_is_active?bi:ai;
+    if(other!=selected)leds.setPixelColor(other,side_color(!ring.a_is_active,24));
+    // Brief algorithm colour on selection, then steady selected side colour.
+    bool accent=now-selectionMs<360u&&((now-selectionMs)/120u)%2u==0;
+    leds.setPixelColor(selected,accent?leds.Color(palette[selected][0],palette[selected][1],palette[selected][2]):side_color(ring.a_is_active,200));
+}
+void write_other_leds(){
     const uint32_t dc=dcOverride.load(std::memory_order_relaxed);
-    if(dc!=kRun)a_brightness=a_mod_brightness=b_brightness=b_mod_brightness=uint8_t(dc>>8);
-
-    // write signal indicators
-    leds.setPixelColor(PRI_A_LED, (dc==kRun&&!a.running)? 0 : leds.Color(a_brightness,a_brightness/2,0));
-    leds.setPixelColor(SEC_A_LED, (dc==kRun&&!a.running && !mod_a.running)? 0 : leds.Color(a_mod_brightness,a_mod_brightness/2,0));
-    leds.setPixelColor(PRI_B_LED, (dc==kRun&&!b.running)? 0 : leds.Color(0,b_brightness/3,b_brightness));
-    leds.setPixelColor(SEC_B_LED, (dc==kRun&&!b.running && !mod_b.running)? 0 : leds.Color(0,b_mod_brightness/3,b_mod_brightness));
-
-    // write trig LEDs
-    leds.setPixelColor(TRIG_A_LED, (a.eos_led)? a_colour : black);
-    leds.setPixelColor(TRIG_B_LED, (b.eos_led)? b_colour : black);
-
-    // write follow LED
-    leds.setPixelColor(FLW_LED, (b.follow_mode != DISABLED)? mix_colour : black);
+    const uint32_t levels=meterLevels.load(std::memory_order_relaxed);
+    const uint8_t pins[4]={PRI_A_LED,SEC_A_LED,PRI_B_LED,SEC_B_LED};
+    for(uint8_t i=0;i<4;i++){
+        uint8_t v=dc==kRun?uint8_t(levels>>(8*i)):uint8_t(dc>>8);
+        leds.setPixelColor(pins[i],side_color(i<2,v));
+    }
+    const uint32_t now=millis(),ca=cycleCountsA.load(),cb=cycleCountsB.load();
+    if(ca!=seenCycleA){seenCycleA=ca;lastCycleA=now;}
+    if(cb!=seenCycleB){seenCycleB=cb;lastCycleB=now;}
+    leds.setPixelColor(TRIG_A_LED,ca&&now-lastCycleA<75u?side_color(true,200):0);
+    leds.setPixelColor(TRIG_B_LED,cb&&now-lastCycleB<75u?side_color(false,200):0);
+    leds.setPixelColor(FLW_LED,b.follow_mode!=DISABLED?mix_colour:0);
 }
 
 // A single click is deferred until the 600 ms sequence expires.
@@ -286,13 +337,19 @@ void poll_follow(){
     }
 }
 void write_cpu_ring(){
+    static int32_t filtered=-1;
     uint32_t m=dspMeter.load(std::memory_order_relaxed);
-    uint8_t lit=((m&255u)*16u+99u)/100u;
-    bool flash=(m&256u)&&((millis()/125u)&1u);
+    int32_t target=int32_t(m&255u)*256;
+    if(filtered<0)filtered=target;else filtered+=(target-filtered)/8;
+    uint8_t lit=uint8_t((filtered*16+25599)/25600);
+    if(lit>16)lit=16;
     for(uint8_t i=0;i<16;i++){
         uint32_t color=i<10?leds.Color(0,160,15):i<13?leds.Color(180,120,0):leds.Color(200,0,0);
-        leds.setPixelColor(i,flash?leds.Color(200,0,0):(i<lit?color:0));
+        leds.setPixelColor(i,i<lit?color:0);
     }
+    // Steady top red marker for timing faults, never flash the whole ring.
+    if(m&256u)leds.setPixelColor(15,leds.Color(200,0,0));
+    if(timerStatus.load()==2)leds.setPixelColor(0,leds.Color(200,0,200));
 }
 
 // called when rising input trigger detected on A sync
@@ -323,7 +380,17 @@ void poll_serial(){
                 dcOverride.store(uint32_t((p*65535L+50)/100));Serial.println("OK DC");
             }else if(!strcmp(buf,"INFO")){
                 uint32_t m=dspMeter.load();Serial.print("Chaos hardware alpha; DSP load ");
-                Serial.print(m&255u);Serial.print("%; deadline fault ");Serial.println((m&256u)?1:0);
+                Serial.print(m&255u);Serial.print("%; faults/window ");Serial.print(faultCount.load());
+                Serial.print("; callbacks/s ");Serial.print(callbackRate.load());
+                Serial.print("; max callback us ");Serial.print(maxCallbackUs.load());
+                Serial.print("; timer status ");Serial.println(timerStatus.load());
+                Serial.print("A mode ");Serial.print(int(a.mode));Serial.print(" time ADC ");Serial.print(a.raw_vals.fm);
+                Serial.print(" pitch ADC ");Serial.print(a.raw_vals.pitch);Serial.print(" phase increment ");Serial.print(phaseA.load());
+                Serial.print(" cycles ");Serial.println(cycleCountsA.load());
+                Serial.print("B mode ");Serial.print(int(b.mode));Serial.print(" time ADC ");Serial.print(b.raw_vals.fm);
+                Serial.print(" pitch ADC ");Serial.print(b.raw_vals.pitch);Serial.print(" phase increment ");Serial.print(phaseB.load());
+                Serial.print(" cycles ");Serial.println(cycleCountsB.load());
+                Serial.print("Packed output LED levels ");Serial.println(meterLevels.load(),HEX);
             }else Serial.println("DC 0..100 | RUN | INFO");
         }else if(!discard){if(n<sizeof(buf)-1)buf[n++]=c;else{discard=true;n=0;}}
     }
