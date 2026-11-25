@@ -43,9 +43,9 @@
   "uf2": {
     "file": "FrontPanel-Test-V0.2.uf2",
     "file_bytes": 177664,
-    "sha256": "ecf4425692992abc431f7734b78cc6c79d8c968c5f32c1076f8dfb432835653a",
+    "sha256": "794fc827c0c3ef03bf3c2400261b7524ea80b358215b42864f5bf1af27a8871c",
     "payload_bytes": 88832,
-    "payload_sha256_concatenated": "065d6a8f80591ddb5022b6b92c04de031ef87d1ce47e08184657c3a5d692a775",
+    "payload_sha256_concatenated": "ed3100f12d8f17cc47e81d8e00bd73d9791e7a8af35ef1f5c50222280005d02e",
     "block_count": 347,
     "address_ranges": [
       [
