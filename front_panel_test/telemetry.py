@@ -1,87 +1,83 @@
-"""Parser for the compact, line-oriented Front Panel Test FP03 protocol."""
-PROTOCOL_VERSION = "FP03"
+"""Parser for Front Panel Test V0.4 serial lines."""
+PROTOCOL_VERSION = "FP04"
 
 
 def _fields(line):
-    result = {}
-    for word in line.split():
-        if "=" not in word:
-            continue
-        key, value = word.split("=", 1)
-        result[key] = value
-    return result
+    return dict(word.split("=", 1) for word in line.split() if "=" in word)
+
+
+def _adc(value, label):
+    try:
+        value = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid {label}") from exc
+    if not 0 <= value <= 4095:
+        raise ValueError(f"{label} outside 0..4095")
+    return value
 
 
 def parse_protocol_line(line):
-    """Parse one FP03 line into typed values; unknown/legacy lines are text."""
     if not isinstance(line, str):
         raise ValueError("serial line must be text")
     line = line.strip()
     if line.startswith("PROTO="):
         return {"type": "protocol", "version": line.partition("=")[2]}
-    if line.startswith("LIVE {") or line.startswith("READY FrontPanel-Test-V0."):
+    if line.startswith("READY FrontPanel-Test-V0.") or line.startswith("LIVE {"):
         return {"type": "legacy", "text": line}
-    if line.startswith(("A ", "B ")):
-        side = line[0]
-        fields = _fields(line[2:])
+    if line[:2] in ("A ", "B "):
+        side, fields = line[0], _fields(line[2:])
         required = ("TIME", "SHAPE", "RATIO", "MODE", "SW1", "SW2")
-        if any(key not in fields for key in required):
-            raise ValueError(f"incomplete {side} control line")
-        values = {key: int(fields[key]) for key in ("TIME", "SHAPE", "RATIO", "SW1", "SW2")}
-        if any(not 0 <= values[key] <= 4095 for key in ("TIME", "SHAPE", "RATIO")):
-            raise ValueError("pot value outside 0..4095")
-        if any(values[key] not in (0, 1) for key in ("SW1", "SW2")):
+        if any(k not in fields for k in required):
+            raise ValueError("incomplete control line")
+        values = {k: _adc(fields[k], k) for k in ("TIME", "SHAPE", "RATIO")}
+        switches = {k: int(fields[k]) for k in ("SW1", "SW2")}
+        if any(v not in (0, 1) for v in switches.values()):
             raise ValueError("switch state outside 0/1")
-        if fields["MODE"] not in ("VCO", "LFO", "ENV"):
+        if fields["MODE"] not in ("ENV", "LFO", "VCO"):
             raise ValueError("invalid mode")
-        return {"type": "controls", "side": side, **values, "MODE": fields["MODE"]}
+        return {"type": "controls", "side": side, **values, **switches, "MODE": fields["MODE"]}
     if line.startswith("ENC="):
-        fields = _fields(line)
+        f = _fields(line)
+        if "BTN" not in f and "BUTTON" in f:
+            return {"type": "legacy", "text": line}
         try:
-            position = int(fields["ENC"])
-            button, follow = int(fields["BUTTON"]), int(fields["FOLLOW"])
+            result = {"type": "encoder", "position": int(f["ENC"]),
+                      "button": int(f["BTN"]), "follow": int(f["FOLLOW"])}
         except (KeyError, ValueError) as exc:
-            raise ValueError("invalid encoder line") from exc
-        if button not in (0, 1) or follow not in (0, 1):
+            raise ValueError("invalid encoder packet") from exc
+        if result["button"] not in (0, 1) or result["follow"] not in (0, 1):
             raise ValueError("button state outside 0/1")
-        return {"type": "encoder", "position": position, "button": button, "follow": follow}
-    if line.startswith("CV "):
-        fields = _fields(line[3:])
-        names = ("A_RATIO", "A_SHAPE", "A_MOD", "A_EXP", "B_RATIO", "B_SHAPE", "B_MOD", "B_EXP")
+        return result
+    if line.startswith("CV="):
         try:
-            values = {name: int(fields[name]) for name in names}
-        except (KeyError, ValueError) as exc:
-            raise ValueError("invalid CV line") from exc
-        if any(not 0 <= value <= 4095 for value in values.values()):
-            raise ValueError("CV value outside 0..4095")
-        return {"type": "cv", **values}
+            values = [_adc(v, "CV") for v in line[3:].split(",")]
+        except ValueError as exc:
+            raise ValueError("invalid CV packet") from exc
+        if len(values) != 8:
+            raise ValueError("CV packet must contain eight values")
+        return {"type": "cv", "values": values}
     if line.startswith("OUT "):
-        fields = _fields(line[4:])
-        names = ("A_PRI", "A_SEC", "B_PRI", "B_SEC")
-        if fields.get("MODE") not in ("SIM", "PWM") or fields.get("METER") not in ("INSTANT", "PEAK", "RMS"):
-            raise ValueError("invalid output status")
+        f = _fields(line[4:])
+        if f.get("MODE") != "PWM" or "=" in line.split()[-1]:
+            return {"type": "legacy", "text": line}
+        values_text = line.split()[-1]
         try:
-            values = {name: int(fields[name]) for name in names}
-        except (KeyError, ValueError) as exc:
-            raise ValueError("invalid output level line") from exc
-        if any(not 0 <= value <= 4095 for value in values.values()):
-            raise ValueError("output level outside 0..4095")
-        return {"type": "outputs", "mode": fields["MODE"], "meter": fields["METER"], **values}
+            values = [_adc(v, "output") for v in values_text.split(",")]
+        except ValueError as exc:
+            raise ValueError("invalid output packet") from exc
+        if len(values) != 4 or f.get("MODE") not in ("PWM",):
+            raise ValueError("invalid output packet shape/status")
+        return {"type": "outputs", "mode": f["MODE"], "meter": f.get("METER", "AUTO"), "values": values}
     if line.startswith("MOVED="):
         return {"type": "moved", "name": line.partition("=")[2]}
-    if line.startswith("STATE "):
-        fields = _fields(line[6:])
+    if line.startswith("SYNC="):
         try:
-            analog, trigger = int(fields["ANALOG"]), int(fields["TRIGGER"])
-        except (KeyError, ValueError) as exc:
-            raise ValueError("invalid state line") from exc
-        if analog not in (0, 1) or trigger not in (0, 1):
-            raise ValueError("arming state outside 0/1")
-        return {"type": "state", "analog": analog, "trigger": trigger}
-    if line.startswith("SYNC "):
-        fields = _fields(line[5:])
-        try:
-            return {"type": "sync", "a": int(fields["A"]), "b": int(fields["B"])}
-        except (KeyError, ValueError) as exc:
-            raise ValueError("invalid sync line") from exc
+            a, b = (int(x) for x in line[5:].split(","))
+        except (ValueError, TypeError) as exc:
+            raise ValueError("invalid sync packet") from exc
+        return {"type": "sync", "a": a, "b": b}
+    if line.startswith("OK ") or line == "OK":
+        return {"type": "ack", "text": line[3:] if len(line) > 3 else ""}
+    if line.startswith("ERR "):
+        return {"type": "error", "text": line[4:]}
     return {"type": "text", "text": line}

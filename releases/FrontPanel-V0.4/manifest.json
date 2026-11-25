@@ -1,0 +1,105 @@
+{
+  "release": "TROLLfx Front Panel Test V0.4",
+  "built_utc_date": "2026-11-25",
+  "status": "built and packaged; V0.4 not yet installed on hardware",
+  "build": {
+    "arduino_cli": "1.6.0",
+    "platform": "rp2040:rp2040@3.9.5",
+    "fqbn": "rp2040:rp2040:arduino_nano_connect",
+    "board": "Arduino Nano RP2040 Connect",
+    "board_options": {
+      "flash": "16777216_0",
+      "description": "16 MB flash, no filesystem"
+    },
+    "flash_bytes": 16777216,
+    "libraries": {
+      "Encoder": "1.4.4",
+      "Adafruit NeoPXL8": "1.2.6",
+      "Adafruit NeoPixel": "1.12.0",
+      "Analog-Digital Multiplexers": "3.0.0"
+    }
+  },
+  "protocol": {
+    "version": "FP04",
+    "telemetry_period_ms": 100,
+    "change_only_command": "REPORT CHANGE",
+    "snapshot_command": "SNAPSHOT",
+    "gui_requires_matching_banner": true,
+    "command_acknowledgements": true
+  },
+  "hardware_scan": {
+    "gpio_and_mux_maps": "copied byte-for-byte from upstream/src/hardware/pins.h",
+    "upstream_scan_order": "EXP/pitch mux read, direct time ADC, shape pot, shape CV, ratio pot, ratio CV, modulation CV, then switches",
+    "mux_settling": "same as upstream Mux 3.0.0: select channel then immediate analogRead; no added delay",
+    "time_a": {
+      "rp2040_gpio": 27,
+      "arduino_variant_alias": "A1",
+      "adc_channel": 1
+    },
+    "time_b": {
+      "rp2040_gpio": 28,
+      "arduino_variant_alias": "A2",
+      "adc_channel": 2
+    },
+    "adc_resolution_bits": 12,
+    "factory_calibration_modified": false,
+    "runtime_calibration_storage_access": false
+  },
+  "outputs": {
+    "startup": "four continuous 1 Hz sine PWM waveforms",
+    "usb_independent": true,
+    "manual_stop_command": "STOP ch|ALL",
+    "arming_state_machine": false,
+    "indicator_channels": [
+      "A Primary",
+      "A Secondary",
+      "B Primary",
+      "B Secondary"
+    ],
+    "indicator_colors": [
+      "orange",
+      "orange",
+      "blue",
+      "blue"
+    ],
+    "zero_signal_is_off": true,
+    "brightness_floor": false,
+    "automatic_indicator": "instantaneous below 20 Hz; peak envelope at/above 20 Hz",
+    "pwm_inversion_compensation": "commanded PWM duty = top - generated signal code",
+    "measurement_limit": "calculated signal levels, not measured jack voltage"
+  },
+  "storage_protection": {
+    "rp2040_eeprom_emulation_sector": {
+      "start": "0x10FFF000",
+      "end_exclusive": "0x11000000",
+      "size_bytes": 4096
+    },
+    "v04_uf2_address_range": [
+      "0x10000000",
+      "0x10015D00"
+    ],
+    "original_spelltwister_uf2_address_range": [
+      "0x10000000",
+      "0x10021400"
+    ],
+    "v04_uf2_overlaps_eeprom_sector": false,
+    "runtime_writes_calibration": false
+  },
+  "uf2": {
+    "file": "FrontPanel-Test-V0.4.uf2",
+    "file_bytes": 178688,
+    "sha256": "d80f312455c4f3757bc6435a85d02e9ce5765d3a98931d3438716fd5a6e5c4b7",
+    "payload_bytes": 89344,
+    "payload_sha256_concatenated": "1c289451adfb5dab69de03b290ccc1a715f53544514761fe6095a548e5bb6224",
+    "block_count": 349,
+    "contiguous": true,
+    "family_id": "0xe48bff56"
+  },
+  "validation": {
+    "automated_tests": "9 tests passed",
+    "python_syntax": "passed",
+    "arduino_compile": "passed",
+    "real_serial_fixture": "COM9 capture from installed V0.3 parsed and correctly identified as FP03; V0.4 physical packets not captured",
+    "physical_v04_tests": "pending installation and observation; no physical pass claimed"
+  }
+}
