@@ -1,0 +1,118 @@
+{
+  "release": "TROLLfx Chaos Engine \u2014 Bench Lab V0.1",
+  "built_utc_date": "2026-11-25",
+  "build": {
+    "arduino_cli": "1.6.0",
+    "platform": "rp2040:rp2040@3.9.5",
+    "fqbn": "rp2040:rp2040:arduino_nano_connect",
+    "board": "Arduino Nano RP2040 Connect",
+    "board_options": {
+      "flash": "16777216_0",
+      "description": "16 MB flash, no filesystem"
+    },
+    "flash_bytes": 16777216,
+    "eeprom_emulation": {
+      "start": "0x10FFF000",
+      "end_exclusive": "0x11000000",
+      "size_bytes": 4096
+    },
+    "bench_lab_libraries": "Arduino-Pico core only; no external Arduino libraries",
+    "original_baseline_libraries": {
+      "Adafruit NeoPXL8": "1.2.6",
+      "Adafruit NeoPixel": "1.12.0",
+      "Analog-Digital Multiplexers": "3.0.0",
+      "Encoder": "1.4.4",
+      "OneButton": "2.6.2"
+    }
+  },
+  "pin_map": [
+    {
+      "channel": "A Primary",
+      "gpio": 13,
+      "upstream_symbol": "PRI_OUT_A"
+    },
+    {
+      "channel": "A Secondary",
+      "gpio": 12,
+      "upstream_symbol": "SEC_OUT_A"
+    },
+    {
+      "channel": "B Primary",
+      "gpio": 1,
+      "upstream_symbol": "PRI_OUT_B"
+    },
+    {
+      "channel": "B Secondary",
+      "gpio": 0,
+      "upstream_symbol": "SEC_OUT_B"
+    }
+  ],
+  "startup": {
+    "outputs_armed": false,
+    "initial_pwm_code": 0,
+    "arm_command_required": true
+  },
+  "persistent_storage": {
+    "bench_lab_eeprom_api_or_flash_write_calls": false,
+    "uf2_overlaps_eeprom_sector": false
+  },
+  "address_range_comparison": {
+    "original_downloaded_uf2": [
+      [
+        "0x10000000",
+        "0x10021400"
+      ]
+    ],
+    "rebuilt_original_baseline_uf2": [
+      [
+        "0x10000000",
+        "0x10029800"
+      ]
+    ],
+    "bench_lab_uf2": [
+      [
+        "0x10000000",
+        "0x10014200"
+      ]
+    ],
+    "eeprom_sector": [
+      "0x10FFF000",
+      "0x11000000"
+    ],
+    "all_application_ranges_end_before_eeprom": true
+  },
+  "artifacts": [
+    {
+      "file": "BenchLab-V0.1.uf2",
+      "file_bytes": 164864,
+      "sha256": "25cb8708d952b79fa874c4d32e5d48b5fdff04404b50167142df20b346b3388c",
+      "uf2_payload_bytes": 82432,
+      "uf2_address_ranges": [
+        [
+          "0x10000000",
+          "0x10014200"
+        ]
+      ],
+      "uf2_block_count": 322,
+      "family_ids": [
+        "0xe48bff56"
+      ]
+    },
+    {
+      "file": "SpellTwister-Baseline-Core3.9.5.uf2",
+      "file_bytes": 339968,
+      "sha256": "a3a4f5b462439a939e69b59a88971ada7abf5bb528e6612dfb546d1af8df3e21",
+      "uf2_payload_bytes": 169984,
+      "uf2_address_ranges": [
+        [
+          "0x10000000",
+          "0x10029800"
+        ]
+      ],
+      "uf2_block_count": 664,
+      "family_ids": [
+        "0xe48bff56"
+      ]
+    }
+  ]
+}

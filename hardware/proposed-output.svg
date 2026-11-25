@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="500" viewBox="0 0 1100 500">
+<rect width="1100" height="500" fill="#f6f7f8"/><text x="30" y="38" font-family="sans-serif" font-size="24" font-weight="bold">Calculated 0–1 V candidate — one representative channel</text>
+<g fill="#fff" stroke="#243247" stroke-width="2" font-family="sans-serif" font-size="16">
+ <rect x="35" y="150" width="120" height="70" rx="8"/><text x="54" y="180" fill="#172033" stroke="none">RP2040</text><text x="54" y="202" fill="#172033" stroke="none">PWM 0–3.3 V</text>
+ <rect x="210" y="160" width="110" height="50" rx="6"/><text x="232" y="190" fill="#172033" stroke="none">RIN 10 kΩ</text>
+ <rect x="365" y="145" width="155" height="80" rx="8" fill="#e8f0ff"/><text x="387" y="178" fill="#172033" stroke="none">TL074 buffer</text><text x="387" y="201" fill="#172033" stroke="none">unchanged</text>
+ <rect x="575" y="160" width="115" height="50" rx="6"/><text x="590" y="190" fill="#172033" stroke="none">Rin 10 kΩ</text>
+ <rect x="740" y="132" width="150" height="100" rx="8" fill="#e8f0ff"/><text x="761" y="174" fill="#172033" stroke="none">TL074</text><text x="761" y="199" fill="#172033" stroke="none">gain 0.303</text>
+ <rect x="950" y="160" width="115" height="50" rx="6"/><text x="967" y="190" fill="#172033" stroke="none">Rout 1 kΩ</text>
+</g>
+<g stroke="#243247" stroke-width="3" fill="none"><path d="M155 185H210M320 185H365M520 185H575M690 185H740M890 185H950M1065 185H1080"/><path d="M815 132V82H640V160"/><path d="M815 232V335H640V210"/><path d="M640 335H580"/></g>
+<g font-family="sans-serif" font-size="15" fill="#172033"><text x="650" y="75">Rf 3.03 kΩ || C = 12.87 nF primary / 28.32 nF secondary</text><text x="585" y="360">REF−10 leg: 25.6 kΩ + existing 4.7 kΩ</text><text x="40" y="280">Ideal map: PWM 0–3.3 V → approximately 1–0 V (firmware inversion yields 0–1 V)</text><text x="40" y="315">Poles remain approximately 4.08 kHz primary / 1.85 kHz secondary</text><text x="40" y="420">Calculated proposal only. Match physical revision and bench-measure before any rework.</text></g>
+</svg>
