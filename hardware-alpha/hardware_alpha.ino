@@ -10,6 +10,8 @@ The main entry point file for the firmware, showing high-level logic.
 #include <pico/time.h>
 #include <cmath>
 #include <atomic>
+#include <cstring>
+#include <cstdlib>
 #include "video_cv.h"
 
 #include "src/classes/Waveformer/waveformer.h"
@@ -113,6 +115,9 @@ NVMWrapper nvm;  // interface for loading/storing config data
 static std::atomic<bool> panelReady{false};
 static std::atomic<uint32_t> dspMeter{0}; // low byte: percent, bit 8: deadline fault
 static bool cpuView=false;
+static constexpr uint32_t kRun=65536u;
+static std::atomic<uint32_t> dcOverride{kRun};
+void poll_serial();
 static constexpr uint32_t dspPeriodUs=22;
 static uint32_t lastTick=0, windowStart=0, workUs=0, deadlineFaults=0;
 static bool tickSeen=false;
@@ -132,7 +137,7 @@ void write_other_leds();
 // --- CORE 0 SETUP/LOOP ---
 void setup() {
     analogReadResolution(BITS_ADC);
-    Serial.begin(9600);
+    Serial.begin(115200);
 
     // initialize objects
     a.init(&b);
@@ -157,6 +162,7 @@ void loop() {
     a.read();
     b.read();
     poll_follow();
+    poll_serial();
     ring.update(a.mod_idx, b.mod_idx);
     
     ring.write_leds(leds);
@@ -216,9 +222,11 @@ bool pwm_timer_ISR(repeating_timer_t* rt) {
     mod_b.generate();
 
     // Normalized waveforms are independent of the physical voltage mapping.
-    const uint16_t ap=a.running?a.val:0, bp=b.running?b.val:0;
-    const uint16_t as=(a.running||mod_a.running)?mod_a.val:0;
-    const uint16_t bs=(b.running||mod_b.running)?mod_b.val:0;
+    uint16_t ap=a.running?a.val:0, bp=b.running?b.val:0;
+    uint16_t as=(a.running||mod_a.running)?mod_a.val:0;
+    uint16_t bs=(b.running||mod_b.running)?mod_b.val:0;
+    const uint32_t dc=dcOverride.load(std::memory_order_relaxed);
+    if(dc!=kRun)ap=as=bp=bs=uint16_t(dc);
     pwm_set_gpio_level(PRI_OUT_A,video_cv::duty(0,ap));
     pwm_set_gpio_level(SEC_OUT_A,video_cv::duty(1,as));
     pwm_set_gpio_level(PRI_OUT_B,video_cv::duty(2,bp));
@@ -242,12 +250,14 @@ bool pwm_timer_ISR(repeating_timer_t* rt) {
 void write_other_leds() {
     uint8_t a_brightness=a.val>>8, a_mod_brightness=mod_a.val>>8;
     uint8_t b_brightness=b.val>>8, b_mod_brightness=mod_b.val>>8;
+    const uint32_t dc=dcOverride.load(std::memory_order_relaxed);
+    if(dc!=kRun)a_brightness=a_mod_brightness=b_brightness=b_mod_brightness=uint8_t(dc>>8);
 
     // write signal indicators
-    leds.setPixelColor(PRI_A_LED, (!a.running)? 0 : leds.Color(a_brightness,a_brightness/2,0));
-    leds.setPixelColor(SEC_A_LED, (!a.running && !mod_a.running)? 0 : leds.Color(a_mod_brightness,a_mod_brightness/2,0));
-    leds.setPixelColor(PRI_B_LED, (!b.running)? 0 : leds.Color(0,b_brightness/3,b_brightness));
-    leds.setPixelColor(SEC_B_LED, (!b.running && !mod_b.running)? 0 : leds.Color(0,b_mod_brightness/3,b_mod_brightness));
+    leds.setPixelColor(PRI_A_LED, (dc==kRun&&!a.running)? 0 : leds.Color(a_brightness,a_brightness/2,0));
+    leds.setPixelColor(SEC_A_LED, (dc==kRun&&!a.running && !mod_a.running)? 0 : leds.Color(a_mod_brightness,a_mod_brightness/2,0));
+    leds.setPixelColor(PRI_B_LED, (dc==kRun&&!b.running)? 0 : leds.Color(0,b_brightness/3,b_brightness));
+    leds.setPixelColor(SEC_B_LED, (dc==kRun&&!b.running && !mod_b.running)? 0 : leds.Color(0,b_mod_brightness/3,b_mod_brightness));
 
     // write trig LEDs
     leds.setPixelColor(TRIG_A_LED, (a.eos_led)? a_colour : black);
@@ -296,4 +306,25 @@ void a_sync_ISR() {
 void b_sync_ISR() {
     b.reset();
     b.running = true;
+}
+
+void poll_serial(){
+    static char buf[40];static uint8_t n=0;static bool discard=false;
+    for(uint8_t budget=0;budget<32&&Serial.available();++budget){
+        char c=char(Serial.read());
+        if(c=='\r'||c=='\n'){
+            if(discard){discard=false;n=0;continue;}
+            if(!n)continue;
+            buf[n]=0;n=0;
+            if(!strcmp(buf,"RUN")){dcOverride.store(kRun);Serial.println("OK RUN");}
+            else if(!strncmp(buf,"DC ",3)){
+                char* end=nullptr;long p=strtol(buf+3,&end,10);
+                if(end==buf+3||*end||p<0||p>100){Serial.println("ERR DC 0..100");continue;}
+                dcOverride.store(uint32_t((p*65535L+50)/100));Serial.println("OK DC");
+            }else if(!strcmp(buf,"INFO")){
+                uint32_t m=dspMeter.load();Serial.print("Chaos hardware alpha; DSP load ");
+                Serial.print(m&255u);Serial.print("%; deadline fault ");Serial.println((m&256u)?1:0);
+            }else Serial.println("DC 0..100 | RUN | INFO");
+        }else if(!discard){if(n<sizeof(buf)-1)buf[n++]=c;else{discard=true;n=0;}}
+    }
 }
