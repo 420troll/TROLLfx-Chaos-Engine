@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Compact Windows serial monitor and control panel for FP04."""
+"""Compact Windows serial monitor and DC calibration panel for FP05."""
 import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 from collections import deque
 from telemetry import PROTOCOL_VERSION, parse_protocol_line
+from calibration import fit_transfer, candidate_network
 
 try:
     import serial
@@ -18,14 +19,12 @@ POT_LABELS = ("A TIME", "A SLOPE", "A RATIO", "B TIME", "B SLOPE", "B RATIO")
 CV_LABELS = ("A Ratio CV", "A Slope CV", "A Mod CV", "A Exp CV",
              "B Ratio CV", "B Slope CV", "B Mod CV", "B Exp CV")
 OUT_LABELS = ("A Primary", "A Secondary", "B Primary", "B Secondary")
-SHAPES = ("sine", "triangle", "ramp", "square")
-FREQUENCIES = ("0.5", "1", "2", "5", "10", "20", "50", "100")
 
 
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("TROLLfx Front Panel Test V0.4")
+        self.title("TROLLfx Front Panel Test V0.5 · DC Calibration")
         self.geometry("800x600")
         self.minsize(680, 500)
         self.port = None
@@ -40,6 +39,9 @@ class App(tk.Tk):
         self.control = {"A": {}, "B": {}}
         self.cv = [0] * 8
         self.output = [0] * 4
+        self.output_codes = [0] * 4
+        self.output_duty = [2047] * 4
+        self.updating_dc = False
         self._build()
         self.refresh_ports()
         self.protocol("WM_DELETE_WINDOW", self.close)
@@ -60,10 +62,10 @@ class App(tk.Tk):
 
         self.tabs = ttk.Notebook(self); self.tabs.pack(fill="both", expand=True, padx=4, pady=(0, 4))
         self.pages = {}
-        for name in ("LIVE", "LED TEST", "OUTPUT TEST", "CV INPUTS", "SERIAL"):
+        for name in ("LIVE", "DC CAL", "INPUTS", "LED TEST", "SERIAL"):
             frame = ttk.Frame(self.tabs, padding=7); self.tabs.add(frame, text=name); self.pages[name] = frame
         self._live(self.pages["LIVE"]); self._led(self.pages["LED TEST"])
-        self._outputs(self.pages["OUTPUT TEST"]); self._cv(self.pages["CV INPUTS"])
+        self._dc_cal(self.pages["DC CAL"]); self._cv(self.pages["INPUTS"])
         self._serial(self.pages["SERIAL"])
 
     def _meter(self, parent, name, row, column, maximum=4095, color=None):
@@ -81,6 +83,8 @@ class App(tk.Tk):
         self.focus_value = tk.StringVar(value="Raw ADC —  ·  0%")
         ttk.Label(focus, textvariable=self.focus_value, font=("Segoe UI", 13)).pack(side="right")
         self.focus_bar = ttk.Progressbar(focus, maximum=4095); self.focus_bar.pack(fill="x", pady=(4, 0))
+        self.time_raw_text = tk.StringVar(value="Time ADC raw · A GPIO27: —  B GPIO28: —")
+        ttk.Label(p, textvariable=self.time_raw_text).pack(anchor="w")
         pots = ttk.LabelFrame(p, text="Potentiometers · clockwise increases", padding=4); pots.pack(fill="x", pady=5)
         pots.columnconfigure((0, 1), weight=1)
         self.pot_bars = {}
@@ -111,27 +115,94 @@ class App(tk.Tk):
         ttk.Button(manual, text="Test pixel", command=self.pixel_test).pack(side="left", padx=5)
         ttk.Label(p, text="Manual pixel feedback expires after 1.8 seconds; channel signal LEDs stay live.").pack(anchor="w", pady=5)
 
-    def _outputs(self, p):
-        ttk.Label(p, text="Four independent, continuously driven PWM outputs. Defaults are 1 Hz sine after boot.", wraplength=720).pack(anchor="w")
-        self.wave = []
-        box = ttk.LabelFrame(p, text="Waveform controls", padding=5); box.pack(fill="x", pady=6)
+    def _dc_cal(self, p):
+        ttk.Label(p, text="Static DC only · 0–100% commanded signal position. No waveform generation or arming.",
+                  font=("Segoe UI", 10, "bold"), wraplength=740).pack(anchor="w")
+        ttk.Label(p, text="At boot each channel holds PWM code 0. The inverted analog stage can produce a nonzero jack voltage even at code 0.",
+                  wraplength=740).pack(anchor="w", pady=(2, 5))
+        box = ttk.LabelFrame(p, text="Four independent static outputs", padding=4); box.pack(fill="x")
+        self.dc_scales = []; self.code_text = []; self.duty_text = []
+        presets = (0, 25, 50, 75, 100)
         for ch, name in enumerate(OUT_LABELS):
-            row = ttk.Frame(box); row.pack(fill="x", pady=4)
-            ttk.Label(row, text=f"{ch} · {name}", width=17).pack(side="left")
-            shape, freq = tk.StringVar(value="sine"), tk.StringVar(value="1")
-            ttk.Combobox(row, textvariable=shape, values=SHAPES, state="readonly", width=10).pack(side="left", padx=3)
-            ttk.Combobox(row, textvariable=freq, values=FREQUENCIES, state="readonly", width=7).pack(side="left", padx=3)
-            ttk.Button(row, text="Start", command=lambda c=ch,s=shape,f=freq:self.send(f"WAVE {c} {s.get()} {f.get()}")).pack(side="left", padx=3)
-            ttk.Button(row, text="Stop", command=lambda c=ch:self.send(f"STOP {c}")).pack(side="left", padx=3)
-            self.wave.append((shape, freq))
-        meter = ttk.LabelFrame(p, text="Live calculated signal levels", padding=4); meter.pack(fill="x")
-        meter.columnconfigure((0, 1), weight=1)
-        self.output_test_bars = []
-        for i, name in enumerate(OUT_LABELS): self.output_test_bars.append(self._meter(meter, name, i // 2, i % 2, color="#d97b22" if i < 2 else "#367bd1"))
-        ttk.Button(p, text="STOP ALL", command=lambda:self.send("STOP ALL")).pack(anchor="e", pady=6)
+            row = ttk.Frame(box); row.pack(fill="x", pady=2)
+            ttk.Label(row, text=name, width=13, foreground="#d97b22" if ch < 2 else "#367bd1").pack(side="left")
+            var = tk.IntVar(value=0); self.dc_scales.append(var)
+            scale = tk.Scale(row, from_=0, to=100, orient="horizontal", resolution=1, showvalue=True,
+                             variable=var, length=220, command=lambda value,c=ch:self.dc_changed(c, value))
+            scale.pack(side="left", fill="x", expand=True, padx=3)
+            code, duty = tk.StringVar(value="SIGNAL 0"), tk.StringVar(value="PWM CODE 2047")
+            self.code_text.append(code); self.duty_text.append(duty)
+            ttk.Label(row, textvariable=code, width=10, anchor="e").pack(side="left")
+            ttk.Label(row, textvariable=duty, width=11, anchor="e").pack(side="left")
+            for pct in presets:
+                ttk.Button(row, text=f"{pct}%", width=4,
+                           command=lambda c=ch,v=pct:self.set_dc(c,v)).pack(side="left", padx=1)
+
+        cal = ttk.LabelFrame(p, text="Manual DMM measurements (volts) · enter a value for each channel/preset", padding=4)
+        cal.pack(fill="x", pady=5)
+        ttk.Label(cal, text="Output").grid(row=0, column=0, sticky="w")
+        self.measurements = []
+        for j, pct in enumerate(presets): ttk.Label(cal, text=f"{pct}%").grid(row=0, column=j+1, padx=3)
+        for ch, name in enumerate(OUT_LABELS):
+            ttk.Label(cal, text=name, width=13).grid(row=ch+1, column=0, sticky="w")
+            row_vars = []
+            for j in range(5):
+                v = tk.StringVar(value=""); row_vars.append(v)
+                ttk.Entry(cal, textvariable=v, width=9).grid(row=ch+1, column=j+1, padx=2, pady=1)
+            self.measurements.append(row_vars)
+        self.cal_results = []
+        result_box = ttk.LabelFrame(p, text="Measured transfer fit", padding=4); result_box.pack(fill="x")
+        for ch, name in enumerate(OUT_LABELS):
+            result = tk.StringVar(value=f"{name}: enter at least two measurements")
+            self.cal_results.append(result)
+            ttk.Label(result_box, textvariable=result, font=("Consolas", 9), wraplength=720, justify="left").pack(anchor="w")
+        ttk.Button(p, text="Calculate gain, offset, polarity and linearity", command=self.calculate_all).pack(anchor="w", pady=3)
+        network_primary = candidate_network(existing_feedback_cap_f=1e-9)
+        network_secondary = candidate_network(existing_feedback_cap_f=2.2e-9)
+        self.network_text = tk.StringVar(value=(
+            "Calculated 0–1 V candidate (published assumptions): Rf 39k→"
+            f"{network_primary['feedback_ohms']/1000:.2f}k; reference leg "
+            f"{network_primary['reference_upper_ohms']/1000:.2f}k+4.70k; preserve poles with primary Cf "
+            f"{network_primary['feedback_cap_f']*1e9:.2f}nF, secondary Cf {network_secondary['feedback_cap_f']*1e9:.2f}nF."))
+        ttk.Label(p, textvariable=self.network_text, wraplength=740).pack(anchor="w", pady=2)
+        ttk.Label(p, text="Calculated starting values only. Confirm PCB revision, resistor population, supplies and DMM readings before any hardware modification.",
+                  foreground="#9a4d00", wraplength=740).pack(anchor="w")
+
+    def dc_changed(self, ch, value):
+        if self.updating_dc: return
+        pct = int(float(value)); code = round(pct * 2047 / 100); duty = 2047 - code
+        self.code_text[ch].set(f"SIGNAL {code}"); self.duty_text[ch].set(f"PWM CODE {duty}")
+        self.send(f"DC {ch} {pct}")
+
+    def set_dc(self, ch, percent):
+        self.updating_dc = True
+        self.dc_scales[ch].set(percent)
+        self.updating_dc = False
+        code = round(percent * 2047 / 100); duty = 2047 - code
+        self.code_text[ch].set(f"SIGNAL {code}"); self.duty_text[ch].set(f"PWM CODE {duty}")
+        self.send(f"DC {ch} {percent}")
+
+    def calculate_all(self):
+        presets = (0, 25, 50, 75, 100)
+        for ch, row in enumerate(self.measurements):
+            pts = []
+            try:
+                for pct, var in zip(presets, row):
+                    if var.get().strip(): pts.append((pct, float(var.get().strip())))
+                fit = fit_transfer(pts)
+                self.cal_results[ch].set(
+                    f"{OUT_LABELS[ch]}: gain {fit['gain_v_per_100pct']:+.4f} V/100% · offset {fit['offset_v']:+.4f} V · "
+                    f"{fit['polarity']} · max linearity error {fit['max_linearity_error_v']:.4f} V "
+                    f"({fit['max_linearity_error_pct_span']:.2f}% span) · R² {fit['r_squared']:.5f}")
+            except ValueError as exc:
+                self.cal_results[ch].set(f"{OUT_LABELS[ch]}: {exc}")
 
     def _cv(self, p):
-        ttk.Label(p, text="Eight raw 12-bit CV inputs and conditioned sync edge counts.").pack(anchor="w")
+        ttk.Label(p, text="Eight raw 12-bit CV inputs; Time controls are direct GPIO27/28 ADC reads.").pack(anchor="w")
+        self.time_diag = tk.StringVar(value="Time diagnostic: not queried")
+        time_row = ttk.Frame(p); time_row.pack(fill="x", pady=3)
+        ttk.Button(time_row, text="Read Time ADC diagnostics", command=lambda:self.send("TIME DIAG")).pack(side="left")
+        ttk.Label(time_row, textvariable=self.time_diag).pack(side="left", padx=7)
         box = ttk.LabelFrame(p, text="Multiplexer CV inputs", padding=4); box.pack(fill="x", pady=5)
         box.columnconfigure((0, 1), weight=1); self.cv_bars = []
         for i, label in enumerate(CV_LABELS): self.cv_bars.append(self._meter(box, label, i % 4, i // 4))
@@ -145,7 +216,7 @@ class App(tk.Tk):
     def _serial(self, p):
         row = ttk.Frame(p); row.pack(fill="x", pady=(0, 4))
         for label, cmd in (("Snapshot", "SNAPSHOT"), ("Live report", "REPORT LIVE"),
-                           ("Changes only", "REPORT CHANGE"), ("Advanced diagnostics", "DIAG")):
+                           ("Changes only", "REPORT CHANGE"), ("Time ADC", "TIME DIAG"), ("Advanced diagnostics", "DIAG")):
             ttk.Button(row, text=label, command=lambda c=cmd:self.send(c)).pack(side="left", padx=2)
         ttk.Button(row, text="Clear log", command=self.clear).pack(side="right", padx=2)
         self.pause_btn = ttk.Button(row, text="Pause log", command=self.toggle_pause); self.pause_btn.pack(side="right", padx=2)
@@ -167,7 +238,7 @@ class App(tk.Tk):
         try:
             self.port = serial.Serial(self.port_var.get().strip(), 115200, timeout=0, write_timeout=1)
             self.rx.clear(); self.protocol_version = None; self.packet_count = self.parse_errors = 0
-            self._status("Connected · waiting for FP04")
+            self._status("Connected · waiting for FP05")
             self.send("SNAPSHOT")
         except Exception as exc:
             self.port = None; messagebox.showerror("Serial connection", str(exc))
@@ -184,6 +255,10 @@ class App(tk.Tk):
     def send(self, command):
         if not self.port: self._status("Not connected"); return
         command = command.strip()
+        if command.startswith("DC "):
+            parts = command.split()
+            if len(parts) == 3:
+                self.tx = deque(c for c in self.tx if not c.startswith(f"DC {parts[1]} "))
         self.tx.append(command)
         self._append("> " + command)
 
@@ -234,7 +309,7 @@ class App(tk.Tk):
         kind = packet["type"]
         if kind == "protocol":
             self.protocol_version = packet["version"]
-            self._status("FP04 matched" if self.protocol_version == PROTOCOL_VERSION else f"Protocol mismatch: {self.protocol_version}")
+            self._status("FP05 matched" if self.protocol_version == PROTOCOL_VERSION else f"Protocol mismatch: {self.protocol_version}")
             return
         if kind == "legacy":
             self._status(f"Firmware mismatch · expected {PROTOCOL_VERSION}, received legacy stream"); return
@@ -258,9 +333,15 @@ class App(tk.Tk):
             self.cv = packet["values"]
             for (bar, val), raw in zip(self.cv_bars, self.cv): bar["value"] = raw; val.set(str(raw))
         elif kind == "outputs":
-            self.output = packet["values"]
-            for (bar, val), raw in zip(self.out_bars, self.output): bar["value"] = raw; val.set(str(raw))
-            for (bar, val), raw in zip(self.output_test_bars, self.output): bar["value"] = raw; val.set(str(raw))
+            self.output = packet["percent"]
+            self.output_codes, self.output_duty = packet["codes"], packet["duty"]
+            for ch, pct in enumerate(self.output):
+                if not self.updating_dc:
+                    self.updating_dc = True; self.dc_scales[ch].set(pct); self.updating_dc = False
+                self.code_text[ch].set(f"SIGNAL {self.output_codes[ch]}")
+                self.duty_text[ch].set(f"PWM CODE {self.output_duty[ch]}")
+            for (bar, val), pct in zip(self.out_bars, self.output):
+                level = pct * 4095 // 100; bar["value"] = level; val.set(f"{pct}%")
         elif kind == "moved":
             self.last_moved = packet["name"]
             name = packet["name"]
@@ -271,6 +352,11 @@ class App(tk.Tk):
                 self.focus_name.set(name.replace("_", " ")); self.focus_value.set("Input changed"); self.focus_bar["value"] = 0
             elif name.startswith("ENCODER"):
                 self.focus_name.set("ENCODER"); self.focus_value.set(self.enc_text.get()); self.focus_bar["value"] = 0
+        elif kind == "timeraw":
+            self.time_raw_text.set(f"Time ADC raw · A GPIO27: {packet['a']}  B GPIO28: {packet['b']}")
+        elif kind == "timediag":
+            self.time_diag.set(f"A scan/direct/SDK {packet['A_SCAN']}/{packet['A_ARDUINO']}/{packet['A_SDK']} · "
+                               f"B {packet['B_SCAN']}/{packet['B_ARDUINO']}/{packet['B_SDK']}")
         elif kind == "sync": self.sync_text.set(f"A edges: {packet['a']}    B edges: {packet['b']}")
 
     def _focus_pot(self, side, key):

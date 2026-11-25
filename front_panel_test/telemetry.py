@@ -1,5 +1,5 @@
-"""Parser for Front Panel Test V0.4 serial lines."""
-PROTOCOL_VERSION = "FP04"
+"""Parser for Front Panel Test V0.5 serial lines."""
+PROTOCOL_VERSION = "FP05"
 
 
 def _fields(line):
@@ -58,6 +58,18 @@ def parse_protocol_line(line):
         return {"type": "cv", "values": values}
     if line.startswith("OUT "):
         f = _fields(line[4:])
+        if line.startswith("OUT PCT="):
+            try:
+                pct = [int(v) for v in f["PCT"].split(",")]
+                codes = [int(v) for v in f["CODE"].split(",")]
+                duty = [int(v) for v in f["DUTY"].split(",")]
+            except (KeyError, ValueError) as exc:
+                raise ValueError("invalid DC output packet") from exc
+            if len(pct) != 4 or len(codes) != 4 or len(duty) != 4:
+                raise ValueError("DC output packet requires four channels")
+            if any(v < 0 or v > 100 for v in pct) or any(v < 0 or v > 2047 for v in codes + duty):
+                raise ValueError("DC output value outside range")
+            return {"type": "outputs", "percent": pct, "codes": codes, "duty": duty}
         if f.get("MODE") != "PWM" or "=" in line.split()[-1]:
             return {"type": "legacy", "text": line}
         values_text = line.split()[-1]
@@ -70,6 +82,22 @@ def parse_protocol_line(line):
         return {"type": "outputs", "mode": f["MODE"], "meter": f.get("METER", "AUTO"), "values": values}
     if line.startswith("MOVED="):
         return {"type": "moved", "name": line.partition("=")[2]}
+    if line.startswith("TIMERAW="):
+        try:
+            values = [int(v) for v in line[8:].split(",")]
+        except ValueError as exc:
+            raise ValueError("invalid raw time packet") from exc
+        if len(values) != 2 or any(v < 0 or v > 4095 for v in values):
+            raise ValueError("raw time value outside range")
+        return {"type": "timeraw", "a": values[0], "b": values[1]}
+    if line.startswith("TIME "):
+        fields = _fields(line[5:])
+        try:
+            result = {key: int(fields[key]) for key in
+                      ("A_GPIO", "A_SCAN", "A_ARDUINO", "A_SDK", "B_GPIO", "B_SCAN", "B_ARDUINO", "B_SDK")}
+        except (KeyError, ValueError) as exc:
+            raise ValueError("invalid Time ADC diagnostic") from exc
+        return {"type": "timediag", **result}
     if line.startswith("SYNC="):
         try:
             a, b = (int(x) for x in line[5:].split(","))

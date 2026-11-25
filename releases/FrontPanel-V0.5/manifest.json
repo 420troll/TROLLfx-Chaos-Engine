@@ -1,0 +1,133 @@
+{
+  "release": "TROLLfx Front Panel Test V0.5 DC Calibration",
+  "built_utc_date": "2026-11-25",
+  "status": "compiled and staged; not flashed",
+  "build": {
+    "arduino_cli": "1.6.0",
+    "platform": "rp2040:rp2040@3.9.5",
+    "fqbn": "rp2040:rp2040:arduino_nano_connect",
+    "board": "Arduino Nano RP2040 Connect",
+    "board_options": {
+      "flash": "16777216_0",
+      "description": "16 MB flash, no filesystem"
+    },
+    "flash_bytes": 16777216,
+    "libraries": {
+      "Encoder": "1.4.4",
+      "Adafruit NeoPXL8": "1.2.6",
+      "Adafruit NeoPixel": "1.12.0",
+      "Analog-Digital Multiplexers": "3.0.0"
+    }
+  },
+  "protocol": {
+    "version": "FP05",
+    "snapshot": "SNAPSHOT",
+    "dc_set": "DC channel percent",
+    "dc_query": "DC?",
+    "time_diagnostic": "TIME DIAG",
+    "telemetry_period_ms": 100,
+    "output_telemetry": "OUT PCT=... CODE=... DUTY=..."
+  },
+  "dc_outputs": {
+    "channels": [
+      "A Primary",
+      "A Secondary",
+      "B Primary",
+      "B Secondary"
+    ],
+    "startup_percent": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "startup_signal_code": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "startup_raw_pwm_code": [
+      2047,
+      2047,
+      2047,
+      2047
+    ],
+    "range_percent": [
+      0,
+      100
+    ],
+    "presets_percent": [
+      0,
+      25,
+      50,
+      75,
+      100
+    ],
+    "static_until_dc_command": true,
+    "waveform_generation": false,
+    "arming_state": false,
+    "pwm_inversion_compensation": "raw PWM code = 2047 - signal code",
+    "output_leds_follow_commanded_percent": true,
+    "measured_hardware_voltage": false
+  },
+  "manual_calibration": {
+    "measurement_grid": "four outputs \u00d7 five presets; signed DMM voltage entered manually",
+    "fit": "least squares V = offset + gain \u00d7 (percent/100)",
+    "reported": [
+      "gain V/full span",
+      "offset V at 0%",
+      "polarity",
+      "maximum absolute residual",
+      "residual percent of measured span",
+      "R squared"
+    ],
+    "storage": "GUI only; not persisted and never written to firmware or EEPROM"
+  },
+  "candidate_0_to_1V_network": {
+    "basis": "published SpellTwister schematic assumptions: 3.3 V PWM, 10 k\u03a9 Rin, 39 k\u03a9 Rf, \u221210 V reference",
+    "feedback_resistor_ohms": 3030.3,
+    "reference_leg_total_ohms": 30303.0,
+    "reference_upper_candidate_ohms_with_4k7_series": 25603.0,
+    "preserve_primary_feedback_pole_cap_f": 1.287e-08,
+    "preserve_secondary_feedback_pole_cap_f": 2.832e-08,
+    "status": "calculated candidate only; physical PCB revision and population unverified"
+  },
+  "time_controls": {
+    "scanner_changed": false,
+    "gpio_a": 27,
+    "gpio_b": 28,
+    "diagnostic": "scanned raw values plus direct Arduino and SDK ADC values",
+    "other_controls_changed": false
+  },
+  "calibration_storage": {
+    "firmware_access": false,
+    "rp2040_eeprom_sector": {
+      "start": "0x10FFF000",
+      "end_exclusive": "0x11000000",
+      "size_bytes": 4096
+    },
+    "uf2_range": [
+      "0x10000000",
+      "0x10015300"
+    ],
+    "uf2_overlaps_eeprom": false
+  },
+  "user_reported_physical_context": "Powered module appears to swing approximately -6 V to +6 V; no per-channel preset measurements supplied.",
+  "uf2": {
+    "file": "FrontPanel-Test-V0.5.uf2",
+    "file_bytes": 173568,
+    "payload_bytes": 86784,
+    "payload_sha256_concatenated": "22b09392f2db6ab67ac597209b3722b3f41e126b16612fcef447a1de34cb31d0",
+    "block_count": 339,
+    "contiguous": true,
+    "family_id": "0xe48bff56",
+    "sha256": "ad4645eabae77825a7ffb81a3b69d3be7f61520aa5c5b492ef5f78c496ef92af"
+  },
+  "validation": {
+    "automated_tests": "11 passed",
+    "python_syntax": "passed",
+    "arduino_compile": "passed",
+    "physical_v05_tests": "pending; release staged for multimeter testing"
+  }
+}
