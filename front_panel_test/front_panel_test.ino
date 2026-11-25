@@ -237,7 +237,7 @@ static void printReading(uint16_t raw, const InputStats &stats) {
   Serial.print(",\"p\":"); Serial.print((uint16_t)((uint32_t)raw * 100 / kAdcMax));
   Serial.print(",\"lo\":"); Serial.print(stats.low);
   Serial.print(",\"hi\":"); Serial.print(stats.high);
-  Serial.print(",\"n\":"); Serial.print(stats.high - stats.low); Serial.print('}');
+  Serial.print(",\"n\":"); Serial.print(stats.high - stats.low);
 }
 
 static void reportLive() {
