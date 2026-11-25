@@ -42,12 +42,32 @@ static uint16_t cvSetupPair(uint8_t p1,uint8_t p2,uint8_t ch) {
     pwm_set_enabled(slice,true);
     return slice;
 }
+// Extra video-CV algorithms: continuous phase, integer math only.
+// Shape and ratio are original calibrated controls (0..2047).
+static uint16_t tri16(uint16_t p) {
+    return p<32768u ? (uint16_t)(p*2u) : (uint16_t)((65535u-p)*2u);
+}
+static uint16_t cvQuadrature(Waveformer& main, Waveformer&, Modulator&) {
+    return tri16((uint16_t)((main.core.acc >> 16)+16384u));
+}
+static uint16_t cvFold(Waveformer& main, Waveformer&, Modulator&) {
+    return tri16((uint16_t)(((uint32_t)main.val*(2048u+7u*main.shp))>>11));
+}
+static uint16_t cvCrossPhase(Waveformer& main, Waveformer& aux, Modulator&) {
+    uint32_t shift=((uint32_t)aux.val*main.shp)>>11;
+    return tri16((uint16_t)((main.core.acc>>16)+shift));
+}
+static uint16_t cvHarmonic(Waveformer& main, Waveformer&, Modulator&) {
+    uint32_t p=main.core.acc>>16;
+    uint32_t n=1u+((uint32_t)main.rat*7u>>11);
+    return (uint16_t)(((uint32_t)tri16((uint16_t)(p*n))+tri16((uint16_t)p))/2u);
+}
 // --- SELECTED RING ALGORITHMS ---
 // on the front panel, runs clockwise starting at the bottom
 algo_f_ptr algo_arr[16] = {
     sine_pm,
-    maximum,
-    phase_offset,
+    cvFold,
+    cvQuadrature,
     double_freq,
     invert,
     half_freq,
@@ -59,8 +79,8 @@ algo_f_ptr algo_arr[16] = {
     sample_and_hold,
     rungle,
     exclusive_or,
-    binary_and,
-    binary_or   
+    cvCrossPhase,
+    cvHarmonic   
 };
 
 // --- GLOBAL VARIABLES ---
@@ -132,7 +152,6 @@ void loop() {
 // --- CORE 1 SETUP/LOOP ---
 void setup1() {
     // setup outputs
-    constexpr uint16_t max_val = (1 << BIT_DEPTH) - 1;
     a_pwm_slice = cvSetupPair(PRI_OUT_A, SEC_OUT_A, 0);
     b_pwm_slice = cvSetupPair(PRI_OUT_B, SEC_OUT_B, 2);
     pinMode(TRIG_OUT_A, OUTPUT);
