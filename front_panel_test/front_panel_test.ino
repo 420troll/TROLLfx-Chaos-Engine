@@ -8,6 +8,7 @@
 #include <Mux.h>
 #include <hardware/gpio.h>
 #include <hardware/pwm.h>
+#include <hardware/adc.h>
 #include <math.h>
 #include <string.h>
 
@@ -84,6 +85,17 @@ static uint8_t ledOneR = 255, ledOneG = 255, ledOneB = 255;
 static uint8_t indicatorOverrideMask = 0;
 static uint8_t indicatorOverride[kChannelCount] = {0};
 static int64_t encoderPosition = 0;
+static int64_t previousEncoderPosition = 0;
+static uint8_t lastMovedInput = 0;
+static uint8_t lastMovedRing = 0;
+static uint32_t packetSequence = 0;
+static bool previousEncoderButton = false, previousFollowButton = false;
+static uint16_t previousSwitches[4] = {0, 0, 0, 0};
+static bool switchBaselineReady = false;
+static bool encoderButtonState = false, followButtonState = false;
+static uint32_t feedbackUntilMs = 0;
+static uint8_t feedbackPixel = FLW_LED;
+static uint16_t directSdk27 = 0, directSdk28 = 0;
 static uint8_t autoChannel = 0;
 static WaveShape autoShape = WAVE_SINE;
 static float autoHz = 1.0f;
@@ -92,11 +104,12 @@ static LedMode ledMode = LED_LIVE;
 static String commandLine;
 
 static void printHelp() {
-  Serial.println("READY FrontPanel-Test-V0.1; analog=DISARMED trigger=DISARMED");
+  Serial.println("READY FrontPanel-Test-V0.2; analog=DISARMED trigger=DISARMED; GPIO27=A_TIME ADC1, GPIO28=B_TIME ADC2");
   Serial.println("ARM ANALOG | ARM TRIG | ARM ALL | DISARM | INFO | STATS | RESET STATS");
   Serial.println("WAVE ch sine|triangle|ramp|square 0.5|1|2|5 | STOP ch|ALL | AUTO ON [shape hz seconds] | AUTO OFF");
   Serial.println("LED STARTUP | LED ONE index r g b | LED RGB | LED RING | LED LIVE | BRIGHTNESS 0..255 | INDICATOR ch 0..255 | INDICATOR LIVE");
   Serial.println("SYNC ON | SYNC OFF | SYNC? | ch: 0 A_PRI, 1 A_SEC, 2 B_PRI, 3 B_SEC; no command writes calibration storage");
+  Serial.println("ADC DIRECT | compares Arduino analogRead and raw RP2040 SDK ADC on GPIO27/28");
 }
 
 static WaveShape parseShape(const char *shape) {
@@ -163,6 +176,24 @@ static void updateInput(uint8_t index, uint16_t raw) {
   if (raw > inputStats[index].high) inputStats[index].high = raw;
 }
 
+static uint8_t rawRingPosition(uint16_t raw) { return (uint8_t)(((uint32_t)raw * NUM_RING_LEDS) / 4096u); }
+static void detectLastMoved() {
+  static uint16_t previous[kInputCount] = {0};
+  static bool baselineReady = false;
+  if (!baselineReady) { for (uint8_t i=0;i<kInputCount;++i) previous[i]=inputStats[i].latest; baselineReady=true; return; }
+  for (uint8_t i = 0; i < kInputCount; ++i) {
+    if (i >= 14) continue;
+    uint16_t now = inputStats[i].latest;
+    uint16_t delta = now > previous[i] ? now - previous[i] : previous[i] - now;
+    if (delta >= 24) { lastMovedInput = i; lastMovedRing = rawRingPosition(now); previous[i] = now; }
+  }
+  if (!switchBaselineReady) { for(uint8_t i=0;i<4;++i)previousSwitches[i]=switchReadings[i];switchBaselineReady=true; }
+  else for(uint8_t i=0;i<4;++i) if ((switchReadings[i]>kAdcMax/2)!=(previousSwitches[i]>kAdcMax/2)) {
+    lastMovedInput=21+i; feedbackPixel=(i<2)?(i==0?PRI_A_LED:SEC_A_LED):(i==2?PRI_B_LED:SEC_B_LED);feedbackUntilMs=millis()+180;
+    previousSwitches[i]=switchReadings[i];
+  }
+}
+
 static void sampleInputs() {
   uint8_t stat = 0;
   potReadings[0] = analogRead(LIN_TIME_A);
@@ -185,6 +216,7 @@ static void sampleInputs() {
   switchReadings[0] = muxA.read(SW_1_A); switchReadings[1] = muxA.read(SW_2_A);
   switchReadings[2] = muxB.read(SW_1_B); switchReadings[3] = muxB.read(SW_2_B);
   for (uint8_t i = 0; i < 4; ++i) updateInput(14 + i, switchReadings[i]);
+  detectLastMoved();
 }
 
 static const char *modeA() {
@@ -209,19 +241,32 @@ static void printReading(uint16_t raw, const InputStats &stats) {
 }
 
 static void reportLive() {
-  Serial.print("LIVE {\"ms\":"); Serial.print(millis()); Serial.print(",\"pots\":[");
+  Serial.print("LIVE {\"seq\":"); Serial.print(++packetSequence); Serial.print(",\"ms\":"); Serial.print(millis()); Serial.print(",\"pots\":[");
   for (uint8_t i = 0; i < 6; ++i) { if (i) Serial.print(','); Serial.print("{\"name\":\""); Serial.print(kPotNames[i]); Serial.print("\","); printReading(potReadings[i], inputStats[i]); Serial.print('}'); }
   Serial.print("],\"cvs\":[");
   for (uint8_t i = 0; i < 8; ++i) { if (i) Serial.print(','); Serial.print("{\"name\":\""); Serial.print(kCvNames[i]); Serial.print("\","); printReading(cvReadings[i], inputStats[6 + i]); Serial.print('}'); }
   Serial.print("],\"switches\":[");
   for (uint8_t i = 0; i < 4; ++i) { if (i) Serial.print(','); Serial.print("{\"name\":\""); Serial.print(kSwitchNames[i]); Serial.print("\","); printReading(switchReadings[i], inputStats[14 + i]); Serial.print('}'); }
   encoderPosition = encoder.read();
+  if (encoderPosition != previousEncoderPosition) { lastMovedInput = 18; lastMovedRing = (uint8_t)(((encoderPosition / 4) % NUM_RING_LEDS + NUM_RING_LEDS) % NUM_RING_LEDS); previousEncoderPosition = encoderPosition; }
+  bool encoderButton = digitalRead(ALGO_BTN) == LOW;
+  bool followButton = digitalRead(FLW_BTN) == HIGH;
+  if (encoderButton && !previousEncoderButton) { lastMovedInput = 19;lastMovedRing=(uint8_t)(((encoderPosition/4)%NUM_RING_LEDS+NUM_RING_LEDS)%NUM_RING_LEDS);feedbackPixel=FLW_LED;feedbackUntilMs=millis()+180; }
+  if (followButton && !previousFollowButton) { lastMovedInput = 20;feedbackPixel=FLW_LED;feedbackUntilMs=millis()+180; }
+  encoderButtonState=encoderButton;followButtonState=followButton;
+  previousEncoderButton = encoderButton; previousFollowButton = followButton;
   Serial.print("],\"encoder\":"); Serial.print((long)encoderPosition);
-  Serial.print(",\"encoder_button\":"); Serial.print(digitalRead(ALGO_BTN) == LOW ? 1 : 0);
-  Serial.print(",\"follow_button\":"); Serial.print(digitalRead(FLW_BTN) == HIGH ? 1 : 0);
+  Serial.print(",\"encoder_button\":"); Serial.print(encoderButton ? 1 : 0);
+  Serial.print(",\"follow_button\":"); Serial.print(followButton ? 1 : 0);
   Serial.print(",\"mode_a\":\""); Serial.print(modeA()); Serial.print("\",\"mode_b\":\""); Serial.print(modeB());
   Serial.print("\",\"sync_a\":"); Serial.print(syncCounts[0]); Serial.print(",\"sync_b\":"); Serial.print(syncCounts[1]);
-  Serial.print(",\"ring\":"); Serial.print(((encoderPosition / 4) % NUM_RING_LEDS + NUM_RING_LEDS) % NUM_RING_LEDS);
+  Serial.print(",\"ring\":"); Serial.print(lastMovedRing);
+  Serial.print(",\"last_moved\":"); Serial.print(lastMovedInput);
+  Serial.print(",\"direct_adc\":[");
+  Serial.print("{\"gpio\":27,\"arduino\":"); Serial.print(potReadings[0]); Serial.print(",\"sdk\":");
+  adc_select_input(1); directSdk27 = adc_read(); Serial.print(directSdk27); Serial.print("},{\"gpio\":28,\"arduino\":"); Serial.print(potReadings[3]); Serial.print(",\"sdk\":");
+  adc_select_input(2); directSdk28 = adc_read(); Serial.print(directSdk28); Serial.print("}]");
+  Serial.print(",\"wave_codes\":["); for (uint8_t i=0;i<kChannelCount;++i){if(i)Serial.print(',');Serial.print(waveChannels[i].code);} Serial.print(']');
   Serial.print(",\"analog_armed\":"); Serial.print(analogArmed ? "true" : "false");
   Serial.print(",\"trigger_armed\":"); Serial.print(triggerArmed ? "true" : "false"); Serial.println("}");
 }
@@ -255,7 +300,13 @@ static void renderLeds(uint32_t nowMs) {
   } else {
     leds.fill(black);
     const uint8_t ringIndex = (uint8_t)(((encoderPosition / 4) % NUM_RING_LEDS + NUM_RING_LEDS) % NUM_RING_LEDS);
-    leds.setPixelColor(ringIndex, mix_colour);
+    (void)ringIndex;
+    static const uint32_t cvColours[8] = {0x36D66B,0x08C7BA,0xE4D339,0xFF55C8,0x7DE65C,0x32D4ED,0xBA77FF,0xF06C43};
+    uint32_t liveColour = lastMovedInput < 6 ? (lastMovedInput < 3 ? a_colour : b_colour) :
+      lastMovedInput < 14 ? cvColours[lastMovedInput-6] :
+      lastMovedInput == 18 ? leds.Color(160, 0, 255) : mix_colour;
+    leds.setPixelColor(lastMovedRing, liveColour);
+    if ((int32_t)(feedbackUntilMs-nowMs)>0) leds.setPixelColor(feedbackPixel, leds.Color(255,255,255));
     for (uint8_t i = 0; i < kChannelCount; ++i) {
       uint8_t level = 0;
       if (waveChannels[i].shape != WAVE_STOP) level = (uint8_t)(50 + waveChannels[i].code * 205u / kPwmTop);
@@ -318,6 +369,12 @@ static void handleCommand(String line) {
     Serial.print("INFO analog_armed="); Serial.print(analogArmed); Serial.print(" trigger_armed="); Serial.print(triggerArmed);
     Serial.print(" sync_enabled="); Serial.print(syncEnabled); Serial.print(" brightness="); Serial.print(brightness);
     Serial.print(" mux_a="); Serial.print(MUX_A); Serial.print(" mux_b="); Serial.println(MUX_B); return;
+  }
+  if (line == "ADC DIRECT") {
+    uint16_t ar27=analogRead(LIN_TIME_A);adc_select_input(1);uint16_t sdk27=adc_read();
+    uint16_t ar28=analogRead(LIN_TIME_B);adc_select_input(2);uint16_t sdk28=adc_read();
+    Serial.print("ADC GPIO27 ADC1 Arduino=");Serial.print(ar27);Serial.print(" SDK=");Serial.print(sdk27);Serial.print(" delta=");Serial.println(abs((int)ar27-(int)sdk27));
+    Serial.print("ADC GPIO28 ADC2 Arduino=");Serial.print(ar28);Serial.print(" SDK=");Serial.print(sdk28);Serial.print(" delta=");Serial.println(abs((int)ar28-(int)sdk28));return;
   }
   if (!strcmp(op, "ARM")) {
     if (line == "ARM ANALOG") { setArming(true, triggerArmed); return; }
@@ -395,6 +452,8 @@ static void setupPwm() {
 
 void setup() {
   analogReadResolution(12);
+  // RP2040 GPIO27/28 are ADC1/ADC2; preserve upstream's direct-GPIO usage.
+  adc_gpio_init(LIN_TIME_A); adc_gpio_init(LIN_TIME_B);
   pinMode(ALGO_BTN,INPUT_PULLUP);pinMode(FLW_BTN,INPUT);
   pinMode(ALGO_ENC_1,INPUT_PULLUP);pinMode(ALGO_ENC_2,INPUT_PULLUP);
   Serial.begin(115200);
@@ -416,6 +475,8 @@ void loop() {
   if((int32_t)(nowUs-nextWaveUs)>=0){nextWaveUs+=kWaveUpdateUs;updateWaves(nowUs);}
   uint32_t nowMs=millis();
   if(autoCycle && (int32_t)(nowMs-autoNextMs)>=0){for(uint8_t i=0;i<kChannelCount;++i)setWave(i,WAVE_STOP,0);setWave(autoChannel,autoShape,autoHz);autoChannel=(autoChannel+1)%kChannelCount;autoNextMs=nowMs+autoStepMs;}
-  if((int32_t)(nowUs-nextSampleUs)>=0){nextSampleUs+=kSamplePeriodUs;sampleInputs();encoderPosition=encoder.read();reportLive();}
+  encoderPosition = encoder.read();
+  if (encoderPosition != previousEncoderPosition) { lastMovedInput=18;lastMovedRing=(uint8_t)(((encoderPosition/4)%NUM_RING_LEDS+NUM_RING_LEDS)%NUM_RING_LEDS);previousEncoderPosition=encoderPosition; }
+  if((int32_t)(nowUs-nextSampleUs)>=0){nextSampleUs+=kSamplePeriodUs;sampleInputs();reportLive();}
   if(nowMs-lastLedRefreshMs>=33){lastLedRefreshMs=nowMs;renderLeds(nowMs);}
 }

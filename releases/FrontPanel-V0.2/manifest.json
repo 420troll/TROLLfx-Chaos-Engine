@@ -1,0 +1,65 @@
+{
+  "release": "TROLLfx Front Panel Test V0.2",
+  "built_utc_date": "2026-11-25",
+  "build": {
+    "arduino_cli": "1.6.0",
+    "platform": "rp2040:rp2040@3.9.5",
+    "fqbn": "rp2040:rp2040:arduino_nano_connect",
+    "board": "Arduino Nano RP2040 Connect",
+    "board_options": {
+      "flash": "16777216_0",
+      "description": "16 MB flash, no filesystem"
+    },
+    "flash_bytes": 16777216,
+    "libraries": {
+      "Encoder": "1.4.4",
+      "Adafruit NeoPXL8": "1.2.6",
+      "Adafruit NeoPixel": "1.12.0",
+      "Analog-Digital Multiplexers": "3.0.0"
+    },
+    "uses_eeprom": false,
+    "uses_flash_write_or_filesystem": false
+  },
+  "adc_diagnostics": {
+    "time_a_gpio": 27,
+    "time_a_adc_channel": 1,
+    "time_b_gpio": 28,
+    "time_b_adc_channel": 2,
+    "analog_read_resolution_bits": 12,
+    "board_variant_a0_gpio": 26,
+    "board_variant_a3_gpio": 29,
+    "comparison": "LIVE JSON and ADC DIRECT compare Arduino analogRead() with consecutive raw SDK adc_read() samples"
+  },
+  "startup_arming": {
+    "analog_outputs_armed": false,
+    "trigger_outputs_armed": false,
+    "requires_explicit_arm_command": true
+  },
+  "eeprom_sector": {
+    "start": "0x10FFF000",
+    "end_exclusive": "0x11000000",
+    "size_bytes": 4096
+  },
+  "uf2": {
+    "file": "FrontPanel-Test-V0.2.uf2",
+    "file_bytes": 177664,
+    "sha256": "ecf4425692992abc431f7734b78cc6c79d8c968c5f32c1076f8dfb432835653a",
+    "payload_bytes": 88832,
+    "payload_sha256_concatenated": "065d6a8f80591ddb5022b6b92c04de031ef87d1ce47e08184657c3a5d692a775",
+    "block_count": 347,
+    "address_ranges": [
+      [
+        "0x10000000",
+        "0x10015b00"
+      ]
+    ],
+    "family_ids": [
+      "0xe48bff56"
+    ],
+    "eeprom_overlap": false,
+    "original_spell_twister_uf2_range": [
+      "0x10000000",
+      "0x10021400"
+    ]
+  }
+}
