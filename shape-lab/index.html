@@ -1,32 +1,32 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TROLLfx Chaos Shape Lab 0.1</title>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>TROLLfx Chaos Shape Lab 0.2</title>
 <style>
-*{box-sizing:border-box}body{margin:0;background:#101216;color:#ddd;font:14px system-ui}header{padding:12px 18px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #333}header b{letter-spacing:.12em;color:#f1a04b}header small{color:#999}main{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:12px;padding:12px}#stage{background:#080808;display:grid;place-items:center;min-height:300px;overflow:hidden}canvas{display:block;width:100%;aspect-ratio:4/3;max-height:85vh;object-fit:contain}#stage:fullscreen{width:100%;height:100%}#stage:fullscreen canvas{max-height:100vh;width:min(100vw,133.333vh)}aside{display:grid;gap:8px;align-content:start}section{border:1px solid #353941;border-radius:8px;padding:10px;background:#191c22}h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;margin:0 0 8px;color:#aab0bb}label{display:grid;grid-template-columns:1fr auto;gap:4px;margin:6px 0}input[type=range]{grid-column:1/-1;width:100%;accent-color:#f1a04b}button,select{background:#282e38;border:1px solid #49505d;color:#eee;border-radius:5px;padding:7px;cursor:pointer}select{width:100%}button:hover{background:#424a58}.buttons{display:flex;gap:5px;flex-wrap:wrap}.b input{accent-color:#64a9ff}output{font-variant-numeric:tabular-nums;color:#aab0bb}#status{font-size:12px;color:#aab0bb}#error{white-space:pre-wrap;color:#ff9191} @media(max-width:700px){main{grid-template-columns:1fr}canvas{max-height:none}}
-</style></head><body><header><b>TROLLfx / CHAOS SHAPE LAB</b><small>V0.1 · GPU pattern instrument</small></header><main><div id="stage"><canvas id="screen" width="800" height="600"></canvas><div id="error"></div></div><aside>
+*{box-sizing:border-box}body{margin:0;background:#101216;color:#ddd;font:14px system-ui}header{padding:12px 18px;display:flex;align-items:center;gap:10px;border-bottom:1px solid #333}header b{letter-spacing:.12em;color:#f1a04b}header small{color:#999}main{display:grid;grid-template-columns:minmax(0,1fr) 290px;gap:12px;padding:12px}#stage{background:#080808;display:grid;place-items:center;min-height:300px;overflow:hidden}canvas{display:block;width:100%;aspect-ratio:4/3;max-height:85vh;object-fit:contain}#stage:fullscreen{width:100%;height:100%}#stage:fullscreen canvas{max-height:100vh;width:min(100vw,133.333vh)}aside{display:grid;gap:8px;align-content:start;max-height:calc(100vh - 80px);overflow:auto}#stage{align-self:start;position:sticky;top:12px} [hidden]{display:none!important}section{border:1px solid #353941;border-radius:8px;padding:10px;background:#191c22}h2{font-size:12px;text-transform:uppercase;letter-spacing:.1em;margin:0 0 8px;color:#aab0bb}label{display:grid;grid-template-columns:1fr auto;gap:4px;margin:6px 0}input[type=range]{grid-column:1/-1;width:100%;accent-color:#f1a04b}button,select{background:#282e38;border:1px solid #49505d;color:#eee;border-radius:5px;padding:7px;cursor:pointer}select{width:100%}button:hover{background:#424a58}.buttons{display:flex;gap:5px;flex-wrap:wrap}.b input{accent-color:#64a9ff}output{font-variant-numeric:tabular-nums;color:#aab0bb}#status{font-size:12px;color:#aab0bb}#error{white-space:pre-wrap;color:#ff9191} @media(max-width:700px){main{grid-template-columns:1fr}canvas{max-height:none}}
+</style></head><body><header><b>TROLLfx / CHAOS SHAPE LAB</b><small>V0.2 · GPU pattern instrument</small></header><main><div id="stage"><canvas id="screen" width="800" height="600"></canvas><div id="error"></div></div><aside>
 <section><h2>Pattern engine</h2><select id="pattern"></select><div class="buttons" style="margin-top:8px"><button id="prev">Previous</button><button id="next">Next</button><button id="random">Randomize</button><button id="reset">Reset</button></div></section>
-<section id="a"><h2>Engine A</h2></section><section id="b" class="b"><h2>Engine B</h2></section><section id="crt"><h2>Colour / CRT</h2></section><section><div class="buttons"><button id="pause">Pause</button><button id="full">Fullscreen</button><button id="save">Save preset</button><button id="load">Load preset</button><button id="capture">PNG</button></div><input id="file" type="file" accept=".json,application/json" hidden><label>Follow / couple engines <input id="follow" type="checkbox"></label><div id="status"></div><small>←/→ pattern · Space pause · F fullscreen</small></section></aside></main>
+<section id="a"><h2>Engine A</h2></section><section id="b" class="b"><h2>Engine B</h2></section><section id="color"><h2>Colour synthesis</h2><select id="palette"></select></section><section id="math"><h2>Math laboratory</h2></section><section id="fractal" hidden><h2>Fractal explorer</h2><select id="fractalType"></select><div class="buttons"><button id="homeFractal">Reset view</button></div><small>Drag to pan · wheel to zoom</small></section><section id="crt"><h2>CRT display</h2></section><section><div class="buttons"><button id="pause">Pause</button><button id="full">Fullscreen</button><button id="save">Save preset</button><button id="load">Load preset</button><button id="capture">PNG</button></div><input id="file" type="file" accept=".json,application/json" hidden><label>Follow / couple engines <input id="follow" type="checkbox"></label><div id="status"></div><small>←/→ pattern · Space pause · F fullscreen</small></section></aside></main>
 <script>
 "use strict";
-const names=["Spiral","Radial rings","Lissajous field","Warped grid","Moiré","Wavefold tunnel","Polar swirl","Harmonic flower","Chaotic drift","Cross-modulated stripes","Kaleidoscope","Orbit interference"];
-const defaults={ta:35,sa:48,ra:38,tb:28,sb:35,rb:52,hue:65,sat:85,scan:25,mask:12,curve:12,bleed:20,bloom:25};
-const state={...defaults,pattern:0,follow:false};const inputs={};
+const names=["Spiral","Radial rings","Lissajous field","Warped grid","Moiré","Fractal explorer","Polar swirl","Harmonic flower","Chaotic drift","Cross-modulated stripes","Kaleidoscope","Orbit interference"];
+const defaults={ta:35,sa:48,ra:38,tb:28,sb:35,rb:52,hue:65,sat:85,cycle:50,bands:35,spread:50,contrast:50,brightness:50,gamma:50,rotation:50,warp:0,folding:0,scale:50,fractalZoom:0,iterations:50,juliaX:30,juliaY:60,morph:0,scan:25,mask:12,curve:12,bleed:20,bloom:25};
+const state={...defaults,pattern:0,follow:false,palette:0,fractalType:0,panX:0,panY:0};const inputs={};
 const $=id=>document.getElementById(id);
-for(const [section,fields] of Object.entries({a:[["ta","Time A"],["sa","Slope A"],["ra","Ratio A"]],b:[["tb","Time B"],["sb","Slope B"],["rb","Ratio B"]],crt:[["hue","Hue"],["sat","Saturation"],["scan","Scanlines"],["mask","Phosphor mask"],["curve","Curvature"],["bleed","Colour bleed"],["bloom","Glow"]]})){
+for(const [section,fields] of Object.entries({a:[["ta","Time A"],["sa","Slope A"],["ra","Ratio A"]],b:[["tb","Time B"],["sb","Slope B"],["rb","Ratio B"]],color:[["hue","Hue offset"],["sat","Saturation"],["cycle","Colour cycle (50 = stopped)"],["bands","Colour bands"],["spread","Colour separation"],["contrast","Contrast"],["brightness","Brightness"],["gamma","Gamma"]],math:[["rotation","Rotation"],["warp","Domain warp"],["folding","Wave folding"],["scale","Spatial scale"]],fractal:[["fractalZoom","Zoom"],["iterations","Detail / iterations"],["juliaX","Julia real"],["juliaY","Julia imaginary"],["morph","Julia orbit animation"]],crt:[["scan","Scanlines"],["mask","Phosphor mask"],["curve","Curvature"],["bleed","Colour bleed"],["bloom","Glow"]]})){
  for(const [key,label] of fields){const l=document.createElement("label"),out=document.createElement("output"),i=document.createElement("input");l.append(document.createTextNode(label),out,i);i.type="range";i.min=0;i.max=100;i.value=state[key];out.value=i.value;i.oninput=()=>{state[key]=+i.value;out.value=i.value};$(section).append(l);inputs[key]={i,out};}
 }
-names.forEach((name,i)=>$("pattern").add(new Option(name,i)));
-function refresh(){for(const [k,{i,out}] of Object.entries(inputs)){i.value=state[k];out.value=i.value}$("pattern").value=state.pattern;$("follow").checked=state.follow}
+names.forEach((name,i)=>$("pattern").add(new Option(name,i)));["Spectrum","Acid neon","Fire","Ice","Purple / gold","Green phosphor","Monochrome","Complementary"].forEach((n,i)=>$("palette").add(new Option(n,i)));["Mandelbrot","Julia","Burning Ship","Tricorn"].forEach((n,i)=>$("fractalType").add(new Option(n,i)));$("palette").onchange=e=>state.palette=+e.target.value;$("fractalType").onchange=e=>{state.fractalType=+e.target.value;homeFractal()};function homeFractal(){state.panX=0;state.panY=0;state.fractalZoom=0;refresh()}$("homeFractal").onclick=homeFractal;
+function refresh(){for(const [k,{i,out}] of Object.entries(inputs)){i.value=state[k];out.value=i.value}$("pattern").value=state.pattern;$("follow").checked=state.follow;$("palette").value=state.palette;$("fractalType").value=state.fractalType;$("fractal").hidden=state.pattern!==5}
 function pattern(n){state.pattern=(n+names.length)%names.length;refresh()}
 $("pattern").onchange=e=>pattern(+e.target.value);$("prev").onclick=()=>pattern(state.pattern-1);$("next").onclick=()=>pattern(state.pattern+1);$("follow").onchange=e=>state.follow=e.target.checked;
-$("random").onclick=()=>{for(const k of ["ta","sa","ra","tb","sb","rb","hue"])state[k]=Math.floor(Math.random()*101);refresh()};
-$("reset").onclick=()=>{Object.assign(state,defaults,{pattern:0,follow:false});refresh()};
+$("random").onclick=()=>{for(const k of ["ta","sa","ra","tb","sb","rb","hue","bands","spread","warp","folding","rotation"])state[k]=Math.floor(Math.random()*101);refresh()};
+$("reset").onclick=()=>{Object.assign(state,defaults,{pattern:0,follow:false,palette:0,fractalType:0,panX:0,panY:0});refresh()};
 function download(blob,name){const url=URL.createObjectURL(blob),a=document.createElement("a");a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
 $("save").onclick=()=>download(new Blob([JSON.stringify({version:1,...state},null,2)],{type:"application/json"}),"chaos-preset.json");
-$("load").onclick=()=>$("file").click();$("file").onchange=async e=>{try{const obj=JSON.parse(await e.target.files[0].text());if(obj.version!==1)throw Error("Unsupported preset");for(const k of Object.keys(defaults))if(Number.isFinite(obj[k]))state[k]=Math.max(0,Math.min(100,obj[k]));if(Number.isInteger(obj.pattern)&&obj.pattern>=0&&obj.pattern<names.length)state.pattern=obj.pattern;state.follow=obj.follow===true;refresh()}catch(err){$("status").textContent=err.message}finally{e.target.value=""}};
+$("load").onclick=()=>$("file").click();$("file").onchange=async e=>{try{const obj=JSON.parse(await e.target.files[0].text());if(obj.version!==1)throw Error("Unsupported preset");for(const k of Object.keys(defaults))if(Number.isFinite(obj[k]))state[k]=Math.max(0,Math.min(100,obj[k]));if(Number.isInteger(obj.pattern)&&obj.pattern>=0&&obj.pattern<names.length)state.pattern=obj.pattern;state.follow=obj.follow===true;state.palette=Number.isInteger(obj.palette)&&obj.palette>=0&&obj.palette<8?obj.palette:0;state.fractalType=Number.isInteger(obj.fractalType)&&obj.fractalType>=0&&obj.fractalType<4?obj.fractalType:0;for(const k of ["panX","panY"])state[k]=Number.isFinite(obj[k])?Math.max(-4,Math.min(4,obj[k])):0;refresh()}catch(err){$("status").textContent=err.message}finally{e.target.value=""}};
 let paused=false;function pause(){paused=!paused;$("pause").textContent=paused?"Resume":"Pause"}$("pause").onclick=pause;
 function fullscreen(){if(document.fullscreenElement)document.exitFullscreen();else $("stage").requestFullscreen().catch(e=>$("status").textContent=e.message)}$("full").onclick=fullscreen;
 document.addEventListener("keydown",e=>{if(["INPUT","SELECT","BUTTON"].includes(e.target.tagName))return;if(e.code==="Space"){e.preventDefault();pause()}if(e.key==="ArrowRight")pattern(state.pattern+1);if(e.key==="ArrowLeft")pattern(state.pattern-1);if(e.key.toLowerCase()==="f")fullscreen()});
-const canvas=$("screen");const gl=canvas.getContext("webgl",{alpha:false,antialias:false,preserveDrawingBuffer:true});
+const canvas=$("screen");let drag=null;canvas.addEventListener("pointerdown",e=>{if(state.pattern!==5)return;drag=[e.clientX,e.clientY];canvas.setPointerCapture(e.pointerId)});canvas.addEventListener("pointermove",e=>{if(!drag)return;const k=3.2*Math.pow(2,-state.fractalZoom/8)/canvas.clientHeight;state.panX-=(e.clientX-drag[0])*k;state.panY+=(e.clientY-drag[1])*k;drag=[e.clientX,e.clientY]});for(const n of ["pointerup","pointercancel","lostpointercapture"])canvas.addEventListener(n,()=>drag=null);canvas.addEventListener("wheel",e=>{if(state.pattern!==5)return;e.preventDefault();state.fractalZoom=Math.max(0,Math.min(100,state.fractalZoom+(e.deltaY<0?3:-3)));refresh()},{passive:false});const gl=canvas.getContext("webgl",{alpha:false,antialias:false,preserveDrawingBuffer:true});
 const vertex="attribute vec2 p; void main(){gl_Position=vec4(p,0.,1.);}";
 const fragment=`
 precision highp float;
@@ -34,9 +34,30 @@ uniform vec2 res;
 uniform vec3 A,B;
 uniform vec2 phase;
 uniform float mode,hue,sat,scan,mask,curve,bleed,bloom,follow;
+uniform float palette,bands,spread,contrast,brightness,gamma,rotation,warp,folding,scale,fractalZoom,iterations,juliaX,juliaY,morph,fractalType,colorPhase;
+uniform vec2 pan;
 const float PI=3.14159265359;
 float fold(float x){return 1.-abs(mod(x,2.)-1.);}
+float fractal(vec2 p){
+ float zoom=exp2(-fractalZoom*12.5);
+ vec2 c=p*1.6*zoom+pan+vec2(fractalType<.5||fractalType>1.5?-.5:0.,0.);
+ vec2 z=vec2(0.);
+ if(fractalType>.5&&fractalType<1.5){z=c;c=vec2(juliaX*2.-1.,juliaY*2.-1.)+morph*.3*vec2(cos(phase.x),sin(phase.y));}
+ float limit=24.+floor(iterations*104.);
+ float escaped=0.,count=0.;
+ for(int i=0;i<128;i++){if(float(i)>=limit)break;
+ if(fractalType>1.5&&fractalType<2.5)z=abs(z);
+ float yy=2.*z.x*z.y;if(fractalType>2.5)yy=-yy;
+ z=vec2(z.x*z.x-z.y*z.y,yy)+c;
+ if(dot(z,z)>256.){count=float(i)+1.-log2(log2(length(z)));escaped=1.;break;}
+ }
+ return escaped<.5?-1.:clamp(2.*count/limit-1.,-.999,1.);
+}
 float field(vec2 p){
+ if(mode>4.5&&mode<5.5)return fractal(p);
+ float ang=(rotation-.5)*6.2831853;
+ p=mat2(cos(ang),sin(ang),-sin(ang),cos(ang))*p*exp2((scale-.5)*3.);
+ p+=warp*.35*vec2(sin(p.y*6.+phase.x),sin(p.x*6.+phase.y));
  float r=length(p),a=atan(p.y,p.x+0.000001);
  float f=2.+A.z*18.,g=2.+B.z*18.,d=A.y*5.,e=B.y*5.;
  float u=phase.x,v=phase.y;
@@ -47,31 +68,48 @@ float field(vec2 p){
  else if(mode<2.5)z=sin(x*f+u+d*sin(y*g+v))*cos(y*g-v+e*sin(x*f));
  else if(mode<3.5)z=sin(x*f*3.+u+d*sin(y*g+v))*sin(y*g*3.+v+e*cos(x*f));
  else if(mode<4.5)z=.5*(sin(x*f*5.+y*g+u)+sin(x*f*5.1-y*g+v+d*sin(r)));
- else if(mode<5.5)z=2.*fold(r*f*3.-u+d*sin(a*g*.25+v))-1.;
+ else if(mode<5.5)z=fractal(p);
  else if(mode<6.5)z=sin(a*(2.+floor(A.z*12.))+d*sin(r*g-v)+r*f+u);
  else if(mode<7.5)z=sin((r-.3*cos(a*(2.+floor(B.z*12.))+v))*f*4.-u);
  else if(mode<8.5)z=sin(x*f+u+d*sin(y*g+v+e*sin(r*f-u))) * cos(r*g+v+sin(a*3.));
  else if(mode<9.5)z=sin(x*f*4.+u+d*sin(y*g*2.+v+e*sin(x*f)));
  else if(mode<10.5){float n=3.+floor(A.z*9.);float k=abs(mod(a,2.*PI/n)-PI/n);z=sin(r*f*4.+d*cos(k*g*3.+v)-u);}
  else {vec2 q=p-.45*vec2(cos(u),sin(u));vec2 s=p-.45*vec2(cos(v),sin(v));z=.5*(sin(length(q)*f*5.)+sin(length(s)*g*5.));}
- return z;
+ return mix(z,2.*fold((z+1.)*(1.+folding*7.))-1.,folding);
 }
-vec3 colorize(float z,float r){float l=.12+.88*smoothstep(-.95,.95,z);float h=hue*6.283+z*(2.+B.y*4.)+r*A.y+phase.y*.25;vec3 c=.5+.5*cos(h+vec3(0.,2.0944,4.1888));return l*mix(vec3(1.),c,sat);}
+vec3 colorize(float z,float r){
+ bool isFractal=mode>4.5&&mode<5.5;
+ if(isFractal&&z<=-1.)return vec3(0.);
+ float n=(z+1.)*.5;
+ float h=hue*6.2831853+colorPhase+n*(1.+bands*36.)+r*A.y;
+ vec3 c=.5+.5*cos(h+vec3(0.,2.0944,4.1888)*(.4+spread*1.2));
+ if(palette>.5&&palette<1.5)c=pow(c,vec3(.55));
+ else if(palette<2.5&&palette>1.5)c=mix(vec3(.15,.005,.02),vec3(1.,.7,.07),c.r);
+ else if(palette<3.5&&palette>2.5)c=mix(vec3(.01,.03,.2),vec3(.45,.95,1.),c.r);
+ else if(palette<4.5&&palette>3.5)c=mix(vec3(.22,.02,.65),vec3(1.,.8,.12),c.r);
+ else if(palette<5.5&&palette>4.5)c=vec3(.05,1.,.25)*(.25+.75*c.r);
+ else if(palette<6.5&&palette>5.5)c=vec3(.25+.75*c.r);
+ else if(palette>6.5)c=mix(vec3(.06,.8,.9),vec3(1.,.12,.25),smoothstep(.35,.65,c.r));
+ float l=isFractal?(.4+.6*sqrt(n)):smoothstep(-.95,.95,z);
+ l=clamp((l-.5)*exp2((contrast-.5)*3.)+.5+(brightness-.5),0.,1.);
+ l=pow(l,exp2((.5-gamma)*3.));
+ return l*mix(vec3(1.),c,sat);
+}
 void main(){vec2 uv=gl_FragCoord.xy/res;vec2 q=uv*2.-1.;q*=1.+curve*.16*dot(q,q);
  if(max(abs(q.x),abs(q.y))>1.){gl_FragColor=vec4(0.,0.,0.,1.);return;}
  vec2 p=q*vec2(res.x/res.y,1.);
  float z=field(p);vec3 c=colorize(z,length(p));
- float dx=.003*bleed;vec3 c2=colorize(field(p+vec2(dx,0.)),length(p));c.r=mix(c.r,c2.r,bleed);c.b=mix(c.b,colorize(field(p-vec2(dx,0.)),length(p)).b,bleed);
+ if(!(mode>4.5&&mode<5.5)){float dx=.003*bleed;vec3 c2=colorize(field(p+vec2(dx,0.)),length(p));c.r=mix(c.r,c2.r,bleed);c.b=mix(c.b,colorize(field(p-vec2(dx,0.)),length(p)).b,bleed);
  float glow=.25*(max(0.,field(p+vec2(.008,0.)))+max(0.,field(p-vec2(.008,0.)))+max(0.,field(p+vec2(0.,.008)))+max(0.,field(p-vec2(0.,.008))));
- c+=bloom*.15*glow;c*=1.-scan*.5*(.5+.5*cos(gl_FragCoord.y*PI));float m=mod(floor(gl_FragCoord.x),3.);vec3 tri=vec3(m<.5?1.:.55,abs(m-1.)<.5?1.:.55,m>1.5?1.:.55);c*=mix(vec3(1.),tri,mask);c*=1.-curve*.25*dot(q,q);gl_FragColor=vec4(clamp(c,0.,1.),1.);
+ c+=bloom*.15*glow;}c*=1.-scan*.5*(.5+.5*cos(gl_FragCoord.y*PI));float m=mod(floor(gl_FragCoord.x),3.);vec3 tri=vec3(m<.5?1.:.55,abs(m-1.)<.5?1.:.55,m>1.5?1.:.55);c*=mix(vec3(1.),tri,mask);c*=1.-curve*.25*dot(q,q);gl_FragColor=vec4(clamp(c,0.,1.),1.);
 }`;
 function shader(type,src){const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))throw Error(gl.getShaderInfoLog(s));return s}
 try{if(!gl)throw Error("WebGL unavailable. Enable hardware acceleration or use another browser.");const pr=gl.createProgram();gl.attachShader(pr,shader(gl.VERTEX_SHADER,vertex));gl.attachShader(pr,shader(gl.FRAGMENT_SHADER,fragment));gl.linkProgram(pr);if(!gl.getProgramParameter(pr,gl.LINK_STATUS))throw Error(gl.getProgramInfoLog(pr));gl.useProgram(pr);
 const buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);const loc=gl.getAttribLocation(pr,"p");gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
-const U={};for(const k of ["res","A","B","phase","mode","hue","sat","scan","mask","curve","bleed","bloom","follow"])U[k]=gl.getUniformLocation(pr,k);
-let last=performance.now(),pa=0,pb=0,frames=0,tally=last;
-function draw(now){let dt=Math.min(.1,(now-last)/1000);last=now;if(!paused){pa=(pa+dt*(.05+state.ta*.035))%(Math.PI*2);pb=state.follow?pa:(pb+dt*(.05+state.tb*.035))%(Math.PI*2)}
-gl.viewport(0,0,canvas.width,canvas.height);gl.uniform2f(U.res,canvas.width,canvas.height);gl.uniform3f(U.A,state.ta/100,state.sa/100,state.ra/100);gl.uniform3f(U.B,state.tb/100,state.sb/100,state.rb/100);gl.uniform2f(U.phase,pa,pb);gl.uniform1f(U.mode,state.pattern);for(const k of ["hue","sat","scan","mask","curve","bleed","bloom"])gl.uniform1f(U[k],state[k]/100);gl.drawArrays(gl.TRIANGLE_STRIP,0,4);frames++;if(now-tally>1000){$("status").textContent=names[state.pattern]+" · "+Math.round(frames*1000/(now-tally))+" FPS · 800×600";frames=0;tally=now}requestAnimationFrame(draw)}requestAnimationFrame(draw);
+const U={};for(const k of ["res","A","B","phase","mode","hue","sat","scan","mask","curve","bleed","bloom","follow","palette","bands","spread","contrast","brightness","gamma","rotation","warp","folding","scale","fractalZoom","iterations","juliaX","juliaY","morph","fractalType","colorPhase","pan"])U[k]=gl.getUniformLocation(pr,k);
+let last=performance.now(),pa=0,pb=0,cp=0,frames=0,tally=last;
+function draw(now){let dt=Math.min(.1,(now-last)/1000);last=now;if(!paused){cp=(cp+dt*(state.cycle-50)*.08+Math.PI*2)%(Math.PI*2);pa=(pa+dt*(.05+state.ta*.035))%(Math.PI*2);pb=state.follow?pa:(pb+dt*(.05+state.tb*.035))%(Math.PI*2)}
+gl.viewport(0,0,canvas.width,canvas.height);gl.uniform2f(U.res,canvas.width,canvas.height);gl.uniform3f(U.A,state.ta/100,state.sa/100,state.ra/100);gl.uniform3f(U.B,state.tb/100,state.sb/100,state.rb/100);gl.uniform2f(U.phase,pa,pb);gl.uniform1f(U.mode,state.pattern);for(const k of ["hue","sat","scan","mask","curve","bleed","bloom"])gl.uniform1f(U[k],state[k]/100);for(const k of ["bands","spread","contrast","brightness","gamma","rotation","warp","folding","scale","fractalZoom","iterations","juliaX","juliaY","morph"])gl.uniform1f(U[k],state[k]/100);gl.uniform1f(U.palette,state.palette);gl.uniform1f(U.fractalType,state.fractalType);gl.uniform1f(U.colorPhase,cp);gl.uniform2f(U.pan,state.panX,state.panY);gl.drawArrays(gl.TRIANGLE_STRIP,0,4);frames++;if(now-tally>1000){$("status").textContent=names[state.pattern]+" · "+Math.round(frames*1000/(now-tally))+" FPS · 800×600";frames=0;tally=now}requestAnimationFrame(draw)}requestAnimationFrame(draw);
 $("capture").onclick=()=>canvas.toBlob(b=>{if(b)download(b,"chaos-frame.png")},"image/png");
 }catch(e){$("error").textContent=e.message}
 </script></body></html>
