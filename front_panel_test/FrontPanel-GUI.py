@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Compact seven-tab Windows diagnostic GUI for Front Panel Test V0.2."""
+"""Windows control and diagnostic GUI for TROLLfx Front Panel Test V0.3."""
 import math
 import time
 import tkinter as tk
 from tkinter import messagebox, ttk
-from telemetry import parse_live_line
+from telemetry import PROTOCOL_VERSION, parse_protocol_line
 
 try:
     import serial
@@ -12,222 +12,275 @@ try:
 except ImportError:
     serial = list_ports = None
 
-POTS = ("A_TIME", "A_RATIO", "A_SHAPE", "B_TIME", "B_RATIO", "B_SHAPE")
-CVS = ("A_RATIO_CV", "A_SHAPE_CV", "A_MOD_CV", "A_EXP_CV", "B_RATIO_CV", "B_SHAPE_CV", "B_MOD_CV", "B_EXP_CV")
-SWITCHES = ("A_SW1", "A_SW2", "B_SW1", "B_SW2")
-OUTPUTS = ("A Primary", "A Secondary", "B Primary", "B Secondary")
+POT_KEYS = (("A", "TIME"), ("A", "SHAPE"), ("A", "RATIO"), ("B", "TIME"), ("B", "SHAPE"), ("B", "RATIO"))
+POT_NAMES = tuple(f"{side}_{name}" for side, name in POT_KEYS)
+CV_NAMES = ("A_RATIO", "A_SHAPE", "A_MOD", "A_EXP", "B_RATIO", "B_SHAPE", "B_MOD", "B_EXP")
+OUTPUT_NAMES = ("A_PRI", "A_SEC", "B_PRI", "B_SEC")
+OUTPUT_LABELS = ("A Primary", "A Secondary", "B Primary", "B Secondary")
 SHAPES = ("sine", "triangle", "ramp", "square")
-FREQUENCIES = ("0.5", "1", "2", "5")
-ALL_INPUTS = POTS + CVS + SWITCHES
-COLORS = {"A": "#ff9d24", "B": "#3488ff", "A_RATIO_CV": "#36d66b", "A_SHAPE_CV": "#08c7ba", "A_MOD_CV": "#e4d339", "A_EXP_CV": "#ff55c8", "B_RATIO_CV": "#7de65c", "B_SHAPE_CV": "#32d4ed", "B_MOD_CV": "#ba77ff", "B_EXP_CV": "#f06c43", "ENCODER": "#b56cff"}
+FREQUENCIES = ("0.5", "1", "2", "5", "10", "20", "50", "100")
+SIDE_COLORS = {"A": "#ed8b22", "B": "#3986ed"}
 
 
 class ScrollTab(ttk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
         canvas = tk.Canvas(self, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        bar = ttk.Scrollbar(self, orient="vertical", command=canvas.yview)
         self.body = ttk.Frame(canvas, padding=8)
-        win = canvas.create_window((0, 0), window=self.body, anchor="nw")
+        window = canvas.create_window((0, 0), window=self.body, anchor="nw")
         self.body.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
-        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win, width=e.width))
-        canvas.configure(yscrollcommand=scrollbar.set)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+        canvas.configure(yscrollcommand=bar.set)
         canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
+        bar.pack(side="right", fill="y")
 
 
 class FrontPanelApp(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("TROLLfx Front Panel Test V0.2")
+        self.title("TROLLfx Front Panel Test V0.3")
         self.geometry("800x600")
         self.minsize(760, 540)
         self.port = None
-        self.rx_buffer = bytearray()
-        self.values = {}
-        self.previous_raw = {}
-        self.selected = "A_TIME"
-        self.locked = False
-        self.history = []
-        self.last_packet_at = None
-        self.last_seq = None
-        self.packet_count = 0
-        self.parse_errors = 0
-        self.waveforms = [{"shape": "sine", "hz": 1.0, "start": time.monotonic(), "running": False} for _ in OUTPUTS]
+        self.rx = bytearray()
+        self.protocol_version = None
+        self.packet_errors = 0
+        self.paused_log = False
+        self.log_lines = 0
+        self.controls = {side: {} for side in ("A", "B")}
+        self.switches = {side: {} for side in ("A", "B")}
+        self.cv_values = {}
+        self.output_values = {name: 0 for name in OUTPUT_NAMES}
+        self.output_mode = "SIM"
+        self.moved = "NONE"
+        self.waveforms = [{"shape": "sine", "hz": 1.0, "start": time.monotonic(), "running": False} for _ in range(4)]
         self._build()
         self.refresh_ports()
         self.protocol("WM_DELETE_WINDOW", self.close)
-        self.after(80, self._poll)
+        self.after(60, self._poll)
         self.after(70, self._animate)
-        self.after(250, self._health)
 
     def _build(self):
-        top = ttk.Frame(self, padding=(6, 4))
+        top = ttk.Frame(self, padding=(6, 3))
         top.pack(fill="x")
         self.port_name = tk.StringVar(value="COM9")
-        self.port_box = ttk.Combobox(top, textvariable=self.port_name, width=10)
+        self.port_box = ttk.Combobox(top, textvariable=self.port_name, width=9)
         self.port_box.pack(side="left")
-        ttk.Button(top, text="Refresh", command=self.refresh_ports).pack(side="left", padx=3)
-        ttk.Button(top, text="Connect", command=self.connect).pack(side="left", padx=3)
-        ttk.Button(top, text="Disconnect", command=self.disconnect).pack(side="left", padx=3)
-        self.status = tk.StringVar(value="Disconnected · COM9 preselected")
-        ttk.Label(top, textvariable=self.status).pack(side="left", padx=6)
-        self.arm_state = tk.StringVar(value="Analog: DISARMED · Trigger: DISARMED")
-        ttk.Label(top, textvariable=self.arm_state, foreground="#a52a2a").pack(side="right", padx=4)
+        ttk.Button(top, text="Refresh", command=self.refresh_ports).pack(side="left", padx=2)
+        ttk.Button(top, text="Connect", command=self.connect).pack(side="left", padx=2)
+        ttk.Button(top, text="Disconnect", command=self.disconnect).pack(side="left", padx=2)
+        self.status = tk.StringVar(value="Disconnected · COM9 default · FP03 required")
+        ttk.Label(top, textvariable=self.status).pack(side="left", padx=5)
+        self.arm_status = tk.StringVar(value="Outputs DISARMED")
+        ttk.Label(top, textvariable=self.arm_status, font=("Segoe UI", 9, "bold")).pack(side="right")
 
         self.tabs = ttk.Notebook(self)
-        self.tabs.pack(fill="both", expand=True, padx=5, pady=(0, 5))
-        self.tab_frames = {}
-        for name in ("Live activity", "All inputs", "LED tests", "Waveform outputs", "Encoder and buttons", "Sync", "Serial diagnostics"):
+        self.tabs.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        self.pages = {}
+        for name in ("Live", "CV Inputs", "LED Tests", "Waveforms", "Sync", "Serial Diagnostics"):
             page = ScrollTab(self.tabs)
             self.tabs.add(page, text=name)
-            self.tab_frames[name] = page.body
-        self._build_live(self.tab_frames["Live activity"])
-        self._build_inputs(self.tab_frames["All inputs"])
-        self._build_leds(self.tab_frames["LED tests"])
-        self._build_outputs(self.tab_frames["Waveform outputs"])
-        self._build_encoder(self.tab_frames["Encoder and buttons"])
-        self._build_sync(self.tab_frames["Sync"])
-        self._build_serial(self.tab_frames["Serial diagnostics"])
+            self.pages[name] = page.body
+        self._build_live(self.pages["Live"])
+        self._build_cvs(self.pages["CV Inputs"])
+        self._build_leds(self.pages["LED Tests"])
+        self._build_waves(self.pages["Waveforms"])
+        self._build_sync(self.pages["Sync"])
+        self._build_serial(self.pages["Serial Diagnostics"])
 
-    def _build_live(self, p):
-        selector = ttk.Frame(p)
-        selector.pack(fill="x")
-        self.live_name = tk.StringVar(value="A_TIME")
-        self.live_lock = tk.BooleanVar(value=False)
-        ttk.Label(selector, text="Watch:").pack(side="left")
-        ttk.Combobox(selector, textvariable=self.live_name, values=ALL_INPUTS + ("ENCODER",), state="readonly", width=18).pack(side="left", padx=4)
-        ttk.Checkbutton(selector, text="Lock selection", variable=self.live_lock, command=self._lock_changed).pack(side="left", padx=5)
-        self.detect = tk.StringVar(value="Waiting for telemetry")
-        ttk.Label(selector, textvariable=self.detect).pack(side="right")
-        self.big_name = tk.StringVar(value="A_TIME")
-        ttk.Label(p, textvariable=self.big_name, font=("Segoe UI", 24, "bold")).pack(anchor="w", pady=(8, 0))
-        self.live_values = tk.StringVar(value="Raw ADC: —     Percent: —%     Observed min/max: — / —")
-        ttk.Label(p, textvariable=self.live_values, font=("Segoe UI", 12)).pack(anchor="w", pady=3)
-        self.meter = ttk.Progressbar(p, maximum=100, mode="determinate")
-        self.meter.pack(fill="x", ipady=8, pady=5)
-        lower = ttk.Frame(p)
-        lower.pack(fill="both", expand=True, pady=5)
-        ringbox = ttk.LabelFrame(lower, text="Physical 16 LED ring", padding=5)
-        ringbox.pack(side="left", fill="y", padx=(0, 6))
-        self.ring = tk.Canvas(ringbox, width=220, height=220, background="#202028", highlightthickness=0)
+    def _build_live(self, parent):
+        head = ttk.Frame(parent)
+        head.pack(fill="x")
+        focus = ttk.LabelFrame(head, text="LAST MOVED CONTROL", padding=(8, 5))
+        focus.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        self.focus_name = tk.StringVar(value="Waiting for control movement")
+        ttk.Label(focus, textvariable=self.focus_name, font=("Segoe UI", 21, "bold")).pack(anchor="w")
+        self.focus_value = tk.StringVar(value="Normalized: — / 4095")
+        ttk.Label(focus, textvariable=self.focus_value, font=("Segoe UI", 15)).pack(anchor="w")
+        self.focus_bar = ttk.Progressbar(focus, maximum=4095)
+        self.focus_bar.pack(fill="x", pady=(4, 1), ipady=4)
+
+        ringbox = ttk.LabelFrame(head, text="16 LED ring", padding=3)
+        ringbox.pack(side="right")
+        self.ring = tk.Canvas(ringbox, width=150, height=140, background="#202028", highlightthickness=0)
         self.ring.pack()
         self.ring_dots = []
         for i in range(16):
-            angle = (i / 16) * math.tau - math.pi / 2
-            x, y = 110 + 78 * math.cos(angle), 110 + 78 * math.sin(angle)
-            dot = self.ring.create_oval(x-8, y-8, x+8, y+8, fill="#50505c", outline="#aaa")
+            angle = i * math.tau / 16 - math.pi / 2
+            x, y = 75 + 51 * math.cos(angle), 70 + 51 * math.sin(angle)
+            dot = self.ring.create_oval(x-5, y-5, x+5, y+5, fill="#45454f", outline="#aaa")
             self.ring_dots.append(dot)
-            self.ring.create_text(x, y, text=str(i), fill="white", font=("Segoe UI", 7))
-        right = ttk.Frame(lower)
-        right.pack(side="left", fill="both", expand=True)
-        self.history_label = tk.StringVar(value="Recent movement: waiting")
-        ttk.Label(right, textvariable=self.history_label, wraplength=400).pack(anchor="nw", pady=5)
-        self.history_canvas = tk.Canvas(right, height=100, background="#f7f7f7", highlightthickness=1, highlightbackground="#bbb")
-        self.history_canvas.pack(fill="x", pady=4)
-        ttk.Label(right, text="A controls orange · B controls blue · CV inputs use distinct colours · encoder purple", wraplength=400).pack(anchor="nw", pady=4)
+            self.ring.create_text(x, y, text=str(i), fill="white", font=("Segoe UI", 6))
+        self.last_moved_state = tk.StringVar(value="Detection: awaiting telemetry")
+        ttk.Label(parent, textvariable=self.last_moved_state).pack(anchor="w", pady=(3, 1))
 
-    def _build_inputs(self, p):
-        ttk.Label(p, text="Live ADC readings · raw 0–4095 and normalized percent", font=("Segoe UI", 12, "bold")).pack(anchor="w")
-        self.input_rows = {}
-        for group, names in (("Potentiometers", POTS), ("CV inputs", CVS), ("Mode switches (mux ADC)", SWITCHES)):
-            box = ttk.LabelFrame(p, text=group, padding=5)
-            box.pack(fill="x", pady=4)
-            for name in names:
-                row = ttk.Frame(box)
-                row.pack(fill="x", pady=1)
-                ttk.Label(row, text=name, width=17).pack(side="left")
-                bar = ttk.Progressbar(row, maximum=100)
-                bar.pack(side="left", fill="x", expand=True, padx=4)
-                val = tk.StringVar(value="—")
-                ttk.Label(row, textvariable=val, width=29).pack(side="right")
-                self.input_rows[name] = (bar, val)
-        self.direct_adc = tk.StringVar(value="GPIO27/28 comparison pending")
-        ttk.Label(p, textvariable=self.direct_adc).pack(anchor="w", pady=5)
+        meters = ttk.LabelFrame(parent, text="Six potentiometers · clockwise increases", padding=4)
+        meters.pack(fill="x", pady=2)
+        self.pot_bars = {}
+        for i, (side, key) in enumerate(POT_KEYS):
+            col = i // 3
+            row = i % 3
+            cell = ttk.Frame(meters)
+            cell.grid(row=row, column=col, sticky="ew", padx=3, pady=2)
+            meters.columnconfigure(col, weight=1)
+            name = f"{side}_{key}"
+            ttk.Label(cell, text=f"{side} {key.title()}", width=10, foreground=SIDE_COLORS[side]).pack(side="left")
+            bar = ttk.Progressbar(cell, maximum=4095)
+            bar.pack(side="left", fill="x", expand=True, padx=3)
+            value = tk.StringVar(value="—")
+            ttk.Label(cell, textvariable=value, width=5, anchor="e").pack(side="right")
+            self.pot_bars[name] = (bar, value)
 
-    def _build_leds(self, p):
-        box = ttk.LabelFrame(p, text="LED modes", padding=6); box.pack(fill="x", pady=4)
-        for title, cmd in (("Startup", "LED STARTUP"), ("RGB cycle", "LED RGB"), ("Ring chase", "LED RING"), ("Live", "LED LIVE")):
-            ttk.Button(box, text=title, command=lambda c=cmd: self.send(c)).pack(side="left", padx=3)
-        individual = ttk.LabelFrame(p, text="Individual LED / brightness", padding=6); individual.pack(fill="x", pady=4)
-        self.led_index = tk.StringVar(value="0"); self.led_r=tk.StringVar(value="255"); self.led_g=tk.StringVar(value="255"); self.led_b=tk.StringVar(value="255")
-        for label, var, width in (("Pixel 0–22",self.led_index,5),("R",self.led_r,4),("G",self.led_g,4),("B",self.led_b,4)):
-            ttk.Label(individual,text=label).pack(side="left",padx=(3,1));ttk.Entry(individual,textvariable=var,width=width).pack(side="left")
-        ttk.Button(individual,text="Set LED",command=self.set_led).pack(side="left",padx=4)
-        self.brightness=tk.StringVar(value="80");ttk.Label(individual,text="Brightness").pack(side="left",padx=3);ttk.Entry(individual,textvariable=self.brightness,width=5).pack(side="left");ttk.Button(individual,text="Apply",command=lambda:self.send("BRIGHTNESS "+self.brightness.get())).pack(side="left",padx=3)
-        out = ttk.LabelFrame(p, text="Output indicator LEDs", padding=6);out.pack(fill="x",pady=4)
-        self.indicator=tk.StringVar(value="0");self.indicator_level=tk.StringVar(value="255")
-        ttk.Combobox(out,textvariable=self.indicator,values=("0","1","2","3"),state="readonly",width=4).pack(side="left")
-        ttk.Entry(out,textvariable=self.indicator_level,width=5).pack(side="left",padx=3)
-        ttk.Button(out,text="Test indicator",command=lambda:self.send(f"INDICATOR {self.indicator.get()} {self.indicator_level.get()}")).pack(side="left",padx=3)
-        ttk.Button(out,text="Indicator live",command=lambda:self.send("INDICATOR LIVE")).pack(side="left",padx=3)
+        bottom = ttk.Frame(parent)
+        bottom.pack(fill="x", pady=3)
+        switchbox = ttk.LabelFrame(bottom, text="Modes and switches", padding=4)
+        switchbox.pack(side="left", fill="both", expand=True, padx=(0, 4))
+        self.mode_labels = {}
+        for side in ("A", "B"):
+            self.mode_labels[side] = tk.StringVar(value=f"{side}: —")
+            ttk.Label(switchbox, textvariable=self.mode_labels[side], font=("Segoe UI", 10, "bold"), foreground=SIDE_COLORS[side]).pack(anchor="w")
+        self.encoder_state = tk.StringVar(value="Encoder —  ·  Button —  ·  Follow —")
+        ttk.Label(bottom, textvariable=self.encoder_state, font=("Segoe UI", 10)).pack(side="right", padx=5)
 
-    def _build_outputs(self, p):
-        safety=ttk.LabelFrame(p,text="Outputs are independently disarmed on startup",padding=5);safety.pack(fill="x",pady=3)
-        ttk.Button(safety,text="ARM ANALOG",command=self.arm_analog).pack(side="left",padx=3);ttk.Button(safety,text="ARM TRIGGER",command=self.arm_trigger).pack(side="left",padx=3);ttk.Button(safety,text="DISARM ALL",command=lambda:self.send("DISARM")).pack(side="left",padx=3)
-        ttk.Label(safety,text="PWM code 0 is not assumed to equal zero jack voltage.",wraplength=250).pack(side="left",padx=8)
-        box=ttk.LabelFrame(p,text="Four independent channels",padding=5);box.pack(fill="x",pady=4)
-        self.output_controls=[]
-        for ch,name in enumerate(OUTPUTS):
-            row=ttk.Frame(box);row.pack(fill="x",pady=2)
-            ttk.Label(row,text=f"{ch} · {name}",width=19).pack(side="left")
-            shape=tk.StringVar(value="sine");freq=tk.StringVar(value="1")
-            ttk.Combobox(row,textvariable=shape,values=SHAPES,state="readonly",width=9).pack(side="left",padx=2)
-            ttk.Combobox(row,textvariable=freq,values=FREQUENCIES,state="readonly",width=5).pack(side="left",padx=2)
-            ttk.Button(row,text="Preview + start",command=lambda c=ch,s=shape,f=freq:self.start_wave(c,s,f)).pack(side="left",padx=2)
-            ttk.Button(row,text="Stop",command=lambda c=ch:self.stop_wave(c)).pack(side="left",padx=2)
-            self.output_controls.append((shape,freq))
-        ttk.Label(p,text="Software waveform preview (digital PWM values; independent of output arming)").pack(anchor="w",pady=(8,2))
-        self.wave_canvas=tk.Canvas(p,height=150,background="#151922",highlightthickness=0);self.wave_canvas.pack(fill="x",expand=True)
-        auto=ttk.LabelFrame(p,text="Automatic output cycle",padding=5);auto.pack(fill="x",pady=4)
-        self.auto_shape=tk.StringVar(value="sine");self.auto_freq=tk.StringVar(value="1");self.auto_seconds=tk.StringVar(value="3")
-        ttk.Combobox(auto,textvariable=self.auto_shape,values=SHAPES,state="readonly",width=9).pack(side="left");ttk.Combobox(auto,textvariable=self.auto_freq,values=FREQUENCIES,state="readonly",width=5).pack(side="left",padx=3);ttk.Entry(auto,textvariable=self.auto_seconds,width=4).pack(side="left");ttk.Label(auto,text="sec/channel").pack(side="left");ttk.Button(auto,text="Start cycle",command=lambda:self.send(f"AUTO ON {self.auto_shape.get()} {self.auto_freq.get()} {self.auto_seconds.get()}")).pack(side="left",padx=4);ttk.Button(auto,text="Stop cycle",command=lambda:self.send("AUTO OFF")).pack(side="left")
+    def _build_cvs(self, parent):
+        ttk.Label(parent, text="Multiplexer CV inputs · raw 12-bit ADC scale", font=("Segoe UI", 12, "bold")).pack(anchor="w")
+        self.cv_bars = {}
+        for name in ("A_RATIO", "A_SHAPE", "A_MOD", "A_EXP", "B_RATIO", "B_SHAPE", "B_MOD", "B_EXP"):
+            row = ttk.Frame(parent)
+            row.pack(fill="x", pady=3)
+            ttk.Label(row, text=name, width=14).pack(side="left")
+            bar = ttk.Progressbar(row, maximum=4095)
+            bar.pack(side="left", fill="x", expand=True, padx=5)
+            value = tk.StringVar(value="—")
+            ttk.Label(row, textvariable=value, width=6, anchor="e").pack(side="right")
+            self.cv_bars[name] = (bar, value)
 
-    def _build_encoder(self,p):
-        self.encoder_text=tk.StringVar(value="Position: —")
-        ttk.Label(p,textvariable=self.encoder_text,font=("Segoe UI",20,"bold")).pack(anchor="w",pady=7)
-        self.button_text=tk.StringVar(value="Encoder button: —     Follow: —")
-        ttk.Label(p,textvariable=self.button_text,font=("Segoe UI",14)).pack(anchor="w",pady=4)
-        self.mode_text=tk.StringVar(value="A mode: —     B mode: —")
-        ttk.Label(p,textvariable=self.mode_text,font=("Segoe UI",14)).pack(anchor="w",pady=4)
-        self.switch_text=tk.StringVar(value="Switches: —")
-        ttk.Label(p,textvariable=self.switch_text,wraplength=600).pack(anchor="w",pady=4)
+    def _build_leds(self, parent):
+        modes = ttk.LabelFrame(parent, text="LED strip tests", padding=6)
+        modes.pack(fill="x", pady=4)
+        for title, cmd in (("Startup", "LED STARTUP"), ("RGB", "LED RGB"), ("Ring chase", "LED RING"), ("Live", "LED LIVE")):
+            ttk.Button(modes, text=title, command=lambda c=cmd: self.send(c)).pack(side="left", padx=3)
+        one = ttk.LabelFrame(parent, text="Manual pixel override", padding=6)
+        one.pack(fill="x", pady=4)
+        self.led_vars = {key: tk.StringVar(value=val) for key, val in (("index", "0"), ("r", "255"), ("g", "255"), ("b", "255"))}
+        for key, label in (("index", "Pixel 0–22"), ("r", "R"), ("g", "G"), ("b", "B")):
+            ttk.Label(one, text=label).pack(side="left", padx=(4, 1))
+            ttk.Entry(one, textvariable=self.led_vars[key], width=5).pack(side="left")
+        ttk.Button(one, text="Set pixel", command=self.set_led).pack(side="left", padx=4)
+        self.brightness = tk.StringVar(value="80")
+        ttk.Label(one, text="Brightness").pack(side="left", padx=4)
+        ttk.Entry(one, textvariable=self.brightness, width=5).pack(side="left")
+        ttk.Button(one, text="Apply", command=lambda: self.send(f"BRIGHTNESS {self.brightness.get()}")).pack(side="left", padx=3)
 
-    def _build_sync(self,p):
-        ttk.Label(p,text="Conditioned sync inputs only (SIG_IN_A GPIO17, SIG_IN_B GPIO18)",font=("Segoe UI",12,"bold")).pack(anchor="w",pady=5)
-        self.sync_text=tk.StringVar(value="Edges A: 0     B: 0")
-        ttk.Label(p,textvariable=self.sync_text,font=("Segoe UI",20)).pack(anchor="w",pady=6)
-        row=ttk.Frame(p);row.pack(anchor="w")
-        for label,cmd in (("Enable counting","SYNC ON"),("Disable","SYNC OFF"),("Query","SYNC?")):
-            ttk.Button(row,text=label,command=lambda c=cmd:self.send(c)).pack(side="left",padx=4)
-        ttk.Label(p,text="Connect only signals already conditioned for the module's sync input. Incoming edges flash the trigger indicator LEDs.",wraplength=620).pack(anchor="w",pady=10)
+        override = ttk.LabelFrame(parent, text="Manual output indicator override", padding=6)
+        override.pack(fill="x", pady=4)
+        self.ind_ch = tk.StringVar(value="0")
+        self.ind_level = tk.StringVar(value="255")
+        ttk.Combobox(override, textvariable=self.ind_ch, values=("0", "1", "2", "3"), state="readonly", width=5).pack(side="left")
+        ttk.Entry(override, textvariable=self.ind_level, width=5).pack(side="left", padx=3)
+        ttk.Button(override, text="Set indicator", command=lambda: self.send(f"INDICATOR {self.ind_ch.get()} {self.ind_level.get()}")).pack(side="left", padx=3)
+        ttk.Button(override, text="Return to signal meter", command=lambda: self.send("INDICATOR LIVE")).pack(side="left", padx=3)
 
-    def _build_serial(self,p):
-        self.health=tk.StringVar(value="Packets: 0 · parse errors: 0 · last packet age: —")
-        ttk.Label(p,textvariable=self.health,font=("Segoe UI",11,"bold")).pack(anchor="w",pady=3)
-        actions=ttk.Frame(p);actions.pack(fill="x")
-        for label,cmd in (("HELP","HELP"),("INFO","INFO"),("STATS","STATS"),("Reset ranges","RESET STATS"),("ADC DIRECT","ADC DIRECT"),("SYNC?","SYNC?")):
-            ttk.Button(actions,text=label,command=lambda c=cmd:self.send(c)).pack(side="left",padx=2)
-        monitorbox=ttk.LabelFrame(p,text="Serial monitor",padding=4);monitorbox.pack(fill="both",expand=True,pady=4)
-        self.monitor=tk.Text(monitorbox,height=12,wrap="none",font=("Consolas",9));scroll=ttk.Scrollbar(monitorbox,orient="vertical",command=self.monitor.yview);self.monitor.configure(yscrollcommand=scroll.set);self.monitor.pack(side="left",fill="both",expand=True);scroll.pack(side="right",fill="y")
-        cmdrow=ttk.Frame(p);cmdrow.pack(fill="x")
-        self.raw_command=tk.StringVar();ttk.Entry(cmdrow,textvariable=self.raw_command).pack(side="left",fill="x",expand=True);ttk.Button(cmdrow,text="Send command",command=self.send_custom).pack(side="left",padx=4)
-        self.direct_debug=tk.StringVar(value="Direct ADC diagnostic: compare Arduino and RP2040 SDK values for GPIO27/28.")
-        ttk.Label(p,textvariable=self.direct_debug,wraplength=620).pack(anchor="w",pady=4)
+    def _build_waves(self, parent):
+        safety = ttk.LabelFrame(parent, text="Separate output arming", padding=5)
+        safety.pack(fill="x", pady=3)
+        ttk.Button(safety, text="ARM ANALOG", command=self.arm_analog).pack(side="left", padx=3)
+        ttk.Button(safety, text="ARM TRIGGER", command=self.arm_trigger).pack(side="left", padx=3)
+        ttk.Button(safety, text="DISARM", command=lambda: self.send("DISARM")).pack(side="left", padx=3)
+        self.output_mode_label = tk.StringVar(value="Waiting for output telemetry")
+        ttk.Label(safety, textvariable=self.output_mode_label, wraplength=280).pack(side="left", padx=6)
+
+        self.output_bars = {}
+        box = ttk.LabelFrame(parent, text="Calculated output signal levels · 0 off, full scale bright", padding=5)
+        box.pack(fill="x", pady=4)
+        for i, name in enumerate(OUTPUT_NAMES):
+            row = ttk.Frame(box)
+            row.pack(fill="x", pady=2)
+            ttk.Label(row, text=OUTPUT_LABELS[i], width=15, foreground=SIDE_COLORS["A" if i < 2 else "B"]).pack(side="left")
+            bar = ttk.Progressbar(row, maximum=4095)
+            bar.pack(side="left", fill="x", expand=True, padx=4)
+            value = tk.StringVar(value="0")
+            ttk.Label(row, textvariable=value, width=5, anchor="e").pack(side="right")
+            self.output_bars[name] = (bar, value)
+
+        controls = ttk.LabelFrame(parent, text="Waveform tests", padding=5)
+        controls.pack(fill="x", pady=4)
+        self.wave_controls = []
+        for ch, label in enumerate(OUTPUT_LABELS):
+            row = ttk.Frame(controls)
+            row.pack(fill="x", pady=2)
+            ttk.Label(row, text=f"{ch} · {label}", width=16).pack(side="left")
+            shape, hz = tk.StringVar(value="sine"), tk.StringVar(value="1")
+            ttk.Combobox(row, textvariable=shape, values=SHAPES, state="readonly", width=9).pack(side="left", padx=2)
+            ttk.Combobox(row, textvariable=hz, values=FREQUENCIES, state="readonly", width=6).pack(side="left", padx=2)
+            ttk.Button(row, text="Start", command=lambda c=ch,s=shape,f=hz:self.start_wave(c,s,f)).pack(side="left", padx=2)
+            ttk.Button(row, text="Stop", command=lambda c=ch:self.stop_wave(c)).pack(side="left", padx=2)
+            self.wave_controls.append((shape, hz))
+        self.preview = tk.Canvas(parent, height=132, background="#151922", highlightthickness=0)
+        self.preview.pack(fill="x", pady=5)
+        auto = ttk.LabelFrame(parent, text="Automatic channel cycle", padding=5)
+        auto.pack(fill="x", pady=3)
+        self.auto_shape, self.auto_hz, self.auto_sec = tk.StringVar(value="sine"), tk.StringVar(value="1"), tk.StringVar(value="3")
+        ttk.Combobox(auto,textvariable=self.auto_shape,values=SHAPES,state="readonly",width=9).pack(side="left")
+        ttk.Combobox(auto,textvariable=self.auto_hz,values=FREQUENCIES,state="readonly",width=6).pack(side="left",padx=3)
+        ttk.Entry(auto,textvariable=self.auto_sec,width=4).pack(side="left")
+        ttk.Label(auto,text="sec/channel").pack(side="left",padx=2)
+        ttk.Button(auto,text="Start cycle",command=lambda:self.send(f"AUTO ON {self.auto_shape.get()} {self.auto_hz.get()} {self.auto_sec.get()}")).pack(side="left",padx=3)
+        ttk.Button(auto,text="Stop cycle",command=lambda:self.send("AUTO OFF")).pack(side="left")
+        meter = ttk.LabelFrame(parent, text="Output LED signal meter", padding=5)
+        meter.pack(fill="x", pady=3)
+        self.meter_mode = tk.StringVar(value="INSTANT")
+        ttk.Combobox(meter,textvariable=self.meter_mode,values=("INSTANT","PEAK","RMS"),state="readonly",width=10).pack(side="left")
+        ttk.Button(meter,text="Set mode",command=lambda:self.send("METER "+self.meter_mode.get())).pack(side="left",padx=3)
+        self.release = tk.StringVar(value="250")
+        ttk.Label(meter,text="Release ms").pack(side="left",padx=(8,2))
+        ttk.Entry(meter,textvariable=self.release,width=6).pack(side="left")
+        ttk.Button(meter,text="Apply",command=lambda:self.send("METER RELEASE "+self.release.get())).pack(side="left",padx=3)
+        ttk.Label(parent,text="Signal indicators show calculated level after compensating for the inverting output stage; they do not measure jack voltage.",wraplength=650).pack(anchor="w",pady=4)
+
+    def _build_sync(self, parent):
+        ttk.Label(parent,text="Conditioned sync inputs only · SIG A GPIO17 · SIG B GPIO18",font=("Segoe UI",12,"bold")).pack(anchor="w",pady=5)
+        self.sync_value=tk.StringVar(value="Edges A: 0    B: 0")
+        ttk.Label(parent,textvariable=self.sync_value,font=("Segoe UI",20)).pack(anchor="w",pady=5)
+        row=ttk.Frame(parent);row.pack(anchor="w")
+        for label,cmd in (("Enable","SYNC ON"),("Disable","SYNC OFF"),("Query","SYNC?")):
+            ttk.Button(row,text=label,command=lambda c=cmd:self.send(c)).pack(side="left",padx=3)
+        ttk.Label(parent,text="Incoming conditioned edges flash the trigger indicator LEDs. Do not connect unconditioned signals directly to these GPIOs.",wraplength=650).pack(anchor="w",pady=8)
+
+    def _build_serial(self, parent):
+        buttons=ttk.Frame(parent);buttons.pack(fill="x",pady=2)
+        for label,cmd in (("Snapshot","SNAPSHOT"),("Live report","REPORT LIVE"),("Changes only","REPORT CHANGE"),("Advanced DIAG","DIAG"),("HELP","HELP")):
+            ttk.Button(buttons,text=label,command=lambda c=cmd:self.send(c)).pack(side="left",padx=2)
+        self.pause_button=ttk.Button(buttons,text="Pause log",command=self.toggle_log)
+        self.pause_button.pack(side="right",padx=2)
+        ttk.Button(buttons,text="Clear log",command=self.clear_log).pack(side="right",padx=2)
+        self.log= tk.Text(parent,height=20,wrap="word",font=("Consolas",9),undo=False)
+        scroll=ttk.Scrollbar(parent,orient="vertical",command=self.log.yview)
+        self.log.configure(yscrollcommand=scroll.set)
+        self.log.pack(side="left",fill="both",expand=True)
+        scroll.pack(side="right",fill="y")
+        cmdrow=ttk.Frame(parent);cmdrow.pack(fill="x",pady=4)
+        self.command=tk.StringVar()
+        ttk.Entry(cmdrow,textvariable=self.command).pack(side="left",fill="x",expand=True)
+        ttk.Button(cmdrow,text="Send",command=self.send_custom).pack(side="left",padx=3)
 
     def refresh_ports(self):
-        if list_ports is None:
-            self.port_box["values"]=["COM9"];self.status.set("Install pyserial · COM9 preselected");return
-        ports=[port.device for port in list_ports.comports()];self.port_box["values"]=ports
+        ports=[p.device for p in list_ports.comports()] if list_ports else []
+        self.port_box["values"]=ports or ["COM9"]
         if "COM9" in ports or not ports:self.port_name.set("COM9")
         elif self.port_name.get() not in ports:self.port_name.set(ports[0])
-        if not ports:self.status.set("No COM device found · COM9 remains editable")
 
     def connect(self):
-        if serial is None: messagebox.showerror("Dependency missing","Install dependencies: py -m pip install -r requirements.txt");return
+        if serial is None:
+            messagebox.showerror("Missing dependency","Install with: py -m pip install -r requirements.txt");return
         try:
-            self.port=serial.Serial(self.port_name.get().strip(),115200,timeout=0,write_timeout=1);self.port.reset_input_buffer();self.rx_buffer.clear();self.status.set(f"Connected: {self.port_name.get()} @ 115200")
-        except Exception as exc:self.port=None;messagebox.showerror("Serial connection",str(exc))
+            self.port=serial.Serial(self.port_name.get().strip(),115200,timeout=0,write_timeout=1)
+            self.port.reset_input_buffer();self.rx.clear();self.protocol_version=None
+            self.status.set("Connected · waiting for FP03 snapshot")
+            self.send("SNAPSHOT");self.send("REPORT LIVE")
+        except Exception as exc:
+            self.port=None;messagebox.showerror("Serial connection",str(exc))
 
     def disconnect(self):
         if self.port:
@@ -240,118 +293,118 @@ class FrontPanelApp(tk.Tk):
         try:self.port.write((command.strip()+"\n").encode("ascii"));self._append("> "+command.strip())
         except (OSError,UnicodeError) as exc:self.disconnect();messagebox.showerror("Serial write",str(exc))
     def send_custom(self):
-        if self.raw_command.get().strip():self.send(self.raw_command.get());self.raw_command.set("")
-    def _append(self,text):
-        self.monitor.insert("end",text+"\n");self.monitor.see("end")
-        if int(self.monitor.index("end-1c").split(".")[0])>2200:self.monitor.delete("1.0","500.0")
+        if self.command.get().strip():self.send(self.command.get());self.command.set("")
+    def _append(self,line):
+        if self.paused_log:return
+        self.log.insert("end",line+"\n");self.log.see("end");self.log_lines+=1
+        if self.log_lines>2000:self.log.delete("1.0","500.0");self.log_lines-=500
+    def clear_log(self):self.log.delete("1.0","end");self.log_lines=0
+    def toggle_log(self):
+        self.paused_log=not self.paused_log
+        self.pause_button.configure(text="Resume log" if self.paused_log else "Pause log")
     def _poll(self):
         if self.port:
             try:
-                data=self.port.read(self.port.in_waiting or 1);self.rx_buffer.extend(data)
-                while b"\n" in self.rx_buffer:
-                    raw,_,tail=self.rx_buffer.partition(b"\n");self.rx_buffer=bytearray(tail);line=raw.decode("utf-8","replace").strip()
+                self.rx.extend(self.port.read(self.port.in_waiting or 1))
+                while b"\n" in self.rx:
+                    raw,_,tail=self.rx.partition(b"\n");self.rx=bytearray(tail)
+                    line=raw.decode("utf-8","replace").strip()
                     if line:self._handle_line(line)
             except OSError as exc:self.disconnect();messagebox.showerror("Serial read",str(exc))
-        self.after(80,self._poll)
+        self.after(60,self._poll)
 
     def _handle_line(self,line):
         self._append(line)
-        if not line.startswith("LIVE "):return
-        try:data=parse_live_line(line)
-        except ValueError:self.parse_errors+=1;return
-        self.packet_count+=1;self.last_packet_at=time.monotonic()
-        seq=data.get("seq")
-        if isinstance(seq,int):
-            if self.last_seq is not None and seq>self.last_seq+1:self.parse_errors+=seq-self.last_seq-1
-            self.last_seq=seq
-        self.values={i["name"]:i for i in data.get("pots",[])+data.get("cvs",[])+data.get("switches",[]) if isinstance(i,dict) and "name" in i}
-        changed=[]
-        for name,item in self.values.items():
-            prior=self.previous_raw.get(name,item.get("r",0));delta=abs(item.get("r",0)-prior)
-            if delta>=14:
-                changed.append((name,delta));self.previous_raw[name]=item.get("r",0)
-            elif name not in self.previous_raw:self.previous_raw[name]=item.get("r",0)
-            if name in getattr(self,"input_rows",{}):
-                bar,val=self.input_rows[name];bar["value"]=item.get("p",0);val.set(f"{item.get('r',0):4d} · {item.get('p',0):3d}% · {item.get('lo',0)}–{item.get('hi',0)} · noise {item.get('n',0)}")
-        if changed and not self.live_lock.get():
-            candidate=max(changed,key=lambda item:item[1])[0]
-            selected_delta=next((d for n,d in changed if n==self.selected),0)
-            if self.selected not in self.values or selected_delta==0 or max(d for _,d in changed)>max(24,selected_delta*1.6):self.selected=candidate;self.live_name.set(candidate)
-        if not self.live_lock.get() and "ENCODER" not in self.live_name.get() and int(data.get("last_moved",-1))==18 and data.get("encoder")!=getattr(self,"previous_encoder",None):
-            self.selected="ENCODER";self.live_name.set("ENCODER")
-        self.previous_encoder=data.get("encoder")
-        self._update_live(data,changed)
-        self.encoder_text.set(f"Encoder position: {data.get('encoder',0)}    Physical ring index: {data.get('ring',0)}")
-        self.button_text.set(f"Encoder button: {'PRESSED' if data.get('encoder_button') else 'released'}    Follow: {'PRESSED' if data.get('follow_button') else 'released'}")
-        self.mode_text.set(f"A mode: {data.get('mode_a','—')}    B mode: {data.get('mode_b','—')}")
-        switches={x.get("name"):x.get("r",0) for x in data.get("switches",[])};self.switch_text.set("Switch ADC: "+"    ".join(f"{n} {switches.get(n,'—')}" for n in SWITCHES))
-        self.sync_text.set(f"Edges A: {data.get('sync_a',0)}     B: {data.get('sync_b',0)}")
-        self.arm_state.set(f"Analog: {'ARMED' if data.get('analog_armed') else 'DISARMED'} · Trigger: {'ARMED' if data.get('trigger_armed') else 'DISARMED'}")
-        direct=data.get("direct_adc",[])
-        if direct:
-            self.direct_adc.set("Direct ADC: "+" · ".join(f"GPIO{x['gpio']} Arduino {x['arduino']} / SDK {x['sdk']} / Δ{abs(x['arduino']-x['sdk'])}" for x in direct))
-            self.direct_debug.set(self.direct_adc.get())
-        self._draw_ring(data.get("ring",0),data.get("last_moved",0))
+        try:packet=parse_protocol_line(line)
+        except ValueError:self.packet_errors+=1;return
+        kind=packet["type"]
+        if kind=="protocol":
+            self.protocol_version=packet["version"]
+            if self.protocol_version==PROTOCOL_VERSION:self.status.set("Connected · FP03 protocol matched")
+            else:self.status.set(f"Protocol mismatch · expected {PROTOCOL_VERSION}, got {self.protocol_version}")
+            return
+        if kind=="legacy":
+            self.status.set(f"Firmware/GUI mismatch · received legacy telemetry; need {PROTOCOL_VERSION}")
+            return
+        if kind=="text":return
+        if self.protocol_version!=PROTOCOL_VERSION:
+            self.status.set("Telemetry received before FP03 handshake" if self.protocol_version is None else "Firmware/GUI protocol mismatch")
+            return
+        if kind=="controls":
+            side=packet["side"]
+            self.controls[side]=packet
+            for key in ("TIME","SHAPE","RATIO"):
+                name=f"{side}_{key}";value=packet[key]
+                bar,label=self.pot_bars[name];bar["value"]=value;label.set(str(value))
+            self.switches[side]={"SW1":packet["SW1"],"SW2":packet["SW2"]}
+            self.mode_labels[side].set(f"{side}: {packet['MODE']} · SW1={packet['SW1']} SW2={packet['SW2']}")
+            self._refresh_focus()
+        elif kind=="encoder":
+            self.encoder_state.set(f"Encoder {packet['position']}  ·  Button {'DOWN' if packet['button'] else 'UP'}  ·  Follow {'DOWN' if packet['follow'] else 'UP'}")
+        elif kind=="cv":
+            self.cv_values=packet
+            for key,(bar,label) in self.cv_bars.items():bar["value"]=packet[key];label.set(str(packet[key]))
+        elif kind=="outputs":
+            self.output_mode=packet["mode"]
+            for key in OUTPUT_NAMES:
+                self.output_values[key]=packet[key]
+                bar,label=self.output_bars[key];bar["value"]=packet[key];label.set(str(packet[key]))
+            if packet["mode"]=="SIM":self.output_mode_label.set(f"SIMULATED · outputs disarmed · {packet['meter']} meter")
+            else:self.output_mode_label.set(f"PWM COMMAND · armed · calculated signal after inversion · {packet['meter']} meter")
+        elif kind=="moved":
+            self.moved=packet["name"];self._refresh_focus()
+        elif kind=="state":
+            self.arm_status.set(f"Analog {'ARMED' if packet['analog'] else 'DISARMED'} · Trigger {'ARMED' if packet['trigger'] else 'DISARMED'}")
+        elif kind=="sync":self.sync_value.set(f"Edges A: {packet['a']}    B: {packet['b']}")
 
-    def _update_live(self,data,changed):
-        name=self.live_name.get();item=self.values.get(name)
+    def _refresh_focus(self):
+        name=self.moved
+        if name in POT_NAMES:
+            side,key=name.split("_",1);value=self.controls.get(side,{}).get(key)
+            if value is None:return
+            self.focus_name.set(name.replace("_"," "));self.focus_value.set(f"Normalized: {value} / 4095")
+            self.focus_bar["value"]=value;self.last_moved_state.set("Last moved · potentiometer polarity normalized clockwise")
+            self._draw_ring((value*16)//4096,SIDE_COLORS[side]);return
+        if name in CV_NAMES:
+            value=self.cv_values.get(name,0);self.focus_name.set(name.replace("_"," "));self.focus_value.set(f"CV ADC: {value} / 4095")
+            self.focus_bar["value"]=value;self.last_moved_state.set("Last moved · CV input");self._draw_ring((value*16)//4096,"#35c8a5");return
         if name=="ENCODER":
-            raw=int(data.get("encoder",0));pct=(raw%64)*100//63;low=high=raw;noise=0;color=COLORS["ENCODER"]
-        elif item:
-            raw=item.get("r",0);pct=item.get("p",0);low=item.get("lo",0);high=item.get("hi",0);noise=item.get("n",0);color=COLORS.get(name, COLORS["A"] if name.startswith("A_") else COLORS["B"])
-        else:return
-        self.big_name.set(name);self.live_values.set(f"Raw ADC: {raw}     Percent: {pct}%     Observed min/max: {low} / {high}     Noise span: {noise}");self.meter["value"]=pct
-        moved=any(n==name for n,_ in changed)
-        self.detect.set("MOVEMENT DETECTED" if moved else ("Locked · monitoring" if self.live_lock.get() else "Stable · auto-detect active"))
-        if moved:
-            self.history.append((time.strftime("%H:%M:%S"),name,raw));self.history=self.history[-8:]
-            self.history_label.set("Recent movement: "+"  →  ".join(f"{t} {n}={v}" for t,n,v in self.history))
-        self.history_canvas.delete("all");w=max(80,self.history_canvas.winfo_width());h=98;self.history_canvas.create_line(0,h-4,w,h-4,fill="#bbb")
-        vals=[v for _,n,v in self.history if n==name][-30:]
-        if len(vals)>1:
-            points=[]
-            for i,v in enumerate(vals):points.extend((i*(w-8)/(len(vals)-1)+4,h-6-(v/4095)*(h-12)))
-            self.history_canvas.create_line(*points,fill=color,width=2)
-    def _draw_ring(self,index,last):
-        if 0 <= int(last) < 6:
-            name=POTS[int(last)];color=COLORS["A"] if name.startswith("A_") else COLORS["B"]
-        elif 6 <= int(last) < 14:color=COLORS[CVS[int(last)-6]]
-        elif int(last)==18 or int(last)==19:color=COLORS["ENCODER"]
-        else:color="#bb72ff"
-        for i,dot in enumerate(self.ring_dots):self.ring.itemconfigure(dot,fill=color if i==int(index)%16 else "#50505c")
-    def _lock_changed(self):
-        self.selected=self.live_name.get()
-        if self.live_lock.get():self.detect.set("Locked · monitoring")
-    def _health(self):
-        age="—" if self.last_packet_at is None else f"{time.monotonic()-self.last_packet_at:.1f}s"
-        self.health.set(f"Packets: {self.packet_count} · parse/sequence errors: {self.parse_errors} · last packet age: {age}")
-        self.after(250,self._health)
+            self.focus_name.set("ENCODER");self.focus_value.set(self.encoder_state.get());self.last_moved_state.set("Last moved · clockwise increases")
+            try:position=int(self.encoder_state.get().split()[1])
+            except (ValueError,IndexError):position=0
+            self.focus_bar["value"]=(position%64)*4095//63;self._draw_ring((position//4)%16,"#b66cff");return
+        self.focus_name.set(name.replace("_"," ") if name!="NONE" else "Waiting for control movement")
+        self.focus_value.set("Normalized: — / 4095");self.focus_bar["value"]=0
+        self.last_moved_state.set("Detection active · no control movement yet" if name=="NONE" else "Button or switch activity")
+
+    def _draw_ring(self,index,color):
+        for i,dot in enumerate(self.ring_dots):self.ring.itemconfigure(dot,fill=color if i==int(index)%16 else "#45454f")
     def _animate(self):
-        if hasattr(self,"wave_canvas"):
-            c=self.wave_canvas;c.delete("all");w=max(c.winfo_width(),200);h=max(c.winfo_height(),100)
-            for ch,state in enumerate(self.waveforms):
-                y0=8+ch*((h-16)/4);amp=max(10,(h-28)/8);color=("#ff9d24","#ffd64a","#3488ff","#42bdff")[ch];c.create_text(35,y0+amp,text=f"{ch} PWM",fill=color,anchor="w")
-                pts=[]
-                for x in range(0,w,3):
-                    phase=((time.monotonic()-state["start"])*state["hz"]+x/max(w,1)*1.6)%1
-                    shape=state["shape"]
-                    if shape=="sine":v=.5+.5*math.sin(math.tau*phase)
-                    elif shape=="triangle":v=2*phase if phase<.5 else 2-2*phase
-                    elif shape=="ramp":v=phase
-                    else:v=1 if phase<.5 else 0
-                    pts.extend((x,y0+amp*(1-2*v)))
-                if len(pts)>=4:c.create_line(*pts,fill=color,width=2)
-                c.create_text(w-4,y0+amp,text="running" if state["running"] else "stopped",fill="#ddd",anchor="e")
+        canvas=self.preview;canvas.delete("all");width=max(canvas.winfo_width(),200);height=max(canvas.winfo_height(),100)
+        for ch,state in enumerate(self.waveforms):
+            base=7+ch*(height-14)/4;amplitude=max(8,(height-24)/8);color=("#ed8b22","#ffc444","#3986ed","#5ab9ff")[ch]
+            points=[]
+            for x in range(0,width,3):
+                phase=((time.monotonic()-state["start"])*state["hz"]+x/max(width,1)*1.5)%1
+                if state["shape"]=="sine":v=.5+.5*math.sin(math.tau*phase)
+                elif state["shape"]=="triangle":v=2*phase if phase<.5 else 2-2*phase
+                elif state["shape"]=="ramp":v=phase
+                else:v=1 if phase<.5 else 0
+                points.extend((x,base+amplitude*(1-2*v)))
+            if points:canvas.create_line(*points,fill=color,width=2)
+            canvas.create_text(34,base+amplitude,text=f"{ch} {OUTPUT_LABELS[ch]}",fill=color,anchor="w")
+            canvas.create_text(width-3,base+amplitude,text="preview" if state["running"] else "stopped",fill="#ddd",anchor="e")
         self.after(70,self._animate)
     def arm_analog(self):
-        if messagebox.askyesno("Arm analogue outputs","Enable the four PWM driven outputs? PWM zero is not assumed to mean zero jack voltage."):self.send("ARM ANALOG")
+        if messagebox.askyesno("Arm analogue outputs","Enable four PWM output commands? Indicator values are calculated, not measured; PWM zero is not assumed to mean zero jack voltage."):self.send("ARM ANALOG")
     def arm_trigger(self):
-        if messagebox.askyesno("Arm trigger outputs","Enable trigger pulses on the module?"):self.send("ARM TRIG")
-    def start_wave(self,ch,shape,freq):
-        self.waveforms[ch]={"shape":shape.get(),"hz":float(freq.get()),"start":time.monotonic(),"running":True};self.send(f"WAVE {ch} {shape.get()} {freq.get()}")
+        if messagebox.askyesno("Arm trigger outputs","Enable trigger pulses?"):self.send("ARM TRIG")
+    def start_wave(self,ch,shape,hz):
+        self.waveforms[ch]={"shape":shape.get(),"hz":float(hz.get()),"start":time.monotonic(),"running":True}
+        self.send(f"WAVE {ch} {shape.get()} {hz.get()}")
     def stop_wave(self,ch):self.waveforms[ch]["running"]=False;self.send(f"STOP {ch}")
-    def set_led(self):self.send(f"LED ONE {self.led_index.get()} {self.led_r.get()} {self.led_g.get()} {self.led_b.get()}")
+    def set_led(self):
+        v=self.led_vars;self.send(f"LED ONE {v['index'].get()} {v['r'].get()} {v['g'].get()} {v['b'].get()}")
 
 
-if __name__ == "__main__":
-    FrontPanelApp().mainloop()
+if __name__=="__main__":FrontPanelApp().mainloop()

@@ -3,25 +3,51 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "front_panel_test"))
-from telemetry import parse_live_line
+from telemetry import PROTOCOL_VERSION, parse_protocol_line
 
 
-class FrontPanelTelemetryTests(unittest.TestCase):
-    def test_valid_live_packet(self):
-        packet = parse_live_line('LIVE {"seq":7,"pots":[],"cvs":[],"switches":[]}')
-        self.assertEqual(packet["seq"], 7)
+class FrontPanelProtocolTests(unittest.TestCase):
+    def test_chaos_engine_uses_exact_upstream_pin_header(self):
+        root = Path(__file__).resolve().parents[1]
+        self.assertEqual((root / "chaos-engine" / "pins.h").read_bytes(),
+                         (root / "upstream" / "src" / "hardware" / "pins.h").read_bytes())
 
-    def test_malformed_json_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "malformed"):
-            parse_live_line('LIVE {"seq":1,')
+    def test_protocol_handshake(self):
+        self.assertEqual(parse_protocol_line("PROTO=FP03"), {"type": "protocol", "version": PROTOCOL_VERSION})
 
-    def test_missing_required_array_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "cvs"):
-            parse_live_line('LIVE {"seq":1,"pots":[],"switches":[]}')
+    def test_control_line_keeps_normalized_values_and_switches(self):
+        parsed = parse_protocol_line("A TIME=2048 SHAPE=1024 RATIO=3072 MODE=VCO SW1=0 SW2=1")
+        self.assertEqual(parsed["side"], "A")
+        self.assertEqual(parsed["TIME"], 2048)
+        self.assertEqual(parsed["SHAPE"], 1024)
+        self.assertEqual((parsed["SW1"], parsed["SW2"]), (0, 1))
 
-    def test_non_live_line_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "not a LIVE"):
-            parse_live_line("OK analog=DISARMED")
+    def test_encoder_and_buttons(self):
+        self.assertEqual(parse_protocol_line("ENC=5 BUTTON=0 FOLLOW=1"),
+                         {"type": "encoder", "position": 5, "button": 0, "follow": 1})
+
+    def test_cv_line(self):
+        parsed = parse_protocol_line("CV A_RATIO=1 A_SHAPE=2 A_MOD=3 A_EXP=4 B_RATIO=5 B_SHAPE=6 B_MOD=7 B_EXP=4095")
+        self.assertEqual(parsed["B_EXP"], 4095)
+
+    def test_output_levels_and_simulation_state(self):
+        parsed = parse_protocol_line("OUT MODE=SIM METER=PEAK RELEASE=250 A_PRI=0 A_SEC=4095 B_PRI=120 B_SEC=240")
+        self.assertEqual(parsed["mode"], "SIM")
+        self.assertEqual((parsed["A_PRI"], parsed["A_SEC"]), (0, 4095))
+
+    def test_invalid_value_rejected(self):
+        with self.assertRaises(ValueError):
+            parse_protocol_line("A TIME=4096 SHAPE=1024 RATIO=3072 MODE=VCO SW1=0 SW2=1")
+
+    def test_legacy_json_is_not_mistaken_for_fp03(self):
+        parsed = parse_protocol_line('LIVE {"seq":1,"pots":[]}')
+        self.assertEqual(parsed["type"], "legacy")
+
+    def test_real_com9_v02_packet_is_recognized_as_legacy_text(self):
+        fixture = Path(__file__).parent / "fixtures" / "com9-frontpanel-v02.txt"
+        captured_line = fixture.read_text(encoding="utf-8").strip()
+        self.assertTrue(captured_line.startswith("LIVE {\"seq\":129"))
+        self.assertEqual(parse_protocol_line(captured_line)["type"], "legacy")
 
 
 if __name__ == "__main__":

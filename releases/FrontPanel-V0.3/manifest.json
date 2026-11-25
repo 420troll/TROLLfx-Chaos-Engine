@@ -1,0 +1,110 @@
+{
+  "release": "TROLLfx Front Panel Test V0.3",
+  "built_utc_date": "2026-11-25",
+  "build": {
+    "arduino_cli": "1.6.0",
+    "platform": "rp2040:rp2040@3.9.5",
+    "fqbn": "rp2040:rp2040:arduino_nano_connect",
+    "board": "Arduino Nano RP2040 Connect",
+    "board_options": {
+      "flash": "16777216_0",
+      "description": "16 MB flash, no filesystem"
+    },
+    "flash_bytes": 16777216,
+    "libraries": {
+      "Encoder": "1.4.4",
+      "Adafruit NeoPXL8": "1.2.6",
+      "Adafruit NeoPixel": "1.12.0",
+      "Analog-Digital Multiplexers": "3.0.0"
+    }
+  },
+  "protocol": {
+    "version": "FP03",
+    "continuous_default": "100 ms line-oriented updates",
+    "change_only_command": "REPORT CHANGE",
+    "snapshot_command": "SNAPSHOT",
+    "gui_requires_matching_banner": true
+  },
+  "controls": {
+    "raw_adc_preserved": true,
+    "pot_display_normalization": "4095 - raw; clockwise increasing",
+    "encoder": "negated diagnostic count; no EEPROM direction access",
+    "factory_calibration_modified": false
+  },
+  "output_indicators": {
+    "mapping": [
+      "A Primary",
+      "A Secondary",
+      "B Primary",
+      "B Secondary"
+    ],
+    "colors": [
+      "orange",
+      "orange",
+      "blue",
+      "blue"
+    ],
+    "zero_is_off": true,
+    "minimum_brightness_floor": false,
+    "modes": [
+      "INSTANT",
+      "PEAK",
+      "RMS"
+    ],
+    "peak_attack": "immediate",
+    "release_ms_default": 250,
+    "release_ms_range": [
+      20,
+      3000
+    ],
+    "high_frequency_test_hz": [
+      10,
+      20,
+      50,
+      100
+    ],
+    "manual_override_command": "INDICATOR"
+  },
+  "output_stage": {
+    "pwm_compensation": "commanded PWM duty = top - calculated signal code",
+    "output_level_source": "calculated signal; not jack-voltage measurement",
+    "analog_armed_at_startup": false,
+    "trigger_armed_at_startup": false
+  },
+  "eeprom_sector": {
+    "start": "0x10FFF000",
+    "end_exclusive": "0x11000000",
+    "size_bytes": 4096
+  },
+  "uf2": {
+    "file": "FrontPanel-Test-V0.3.uf2",
+    "file_bytes": 180224,
+    "sha256": "7b746946abcd8645e943467f3b40460166677888edf5997a92ce07d394e00f54",
+    "payload_bytes": 90112,
+    "payload_sha256_concatenated": "58c3259ce443ac87c15c9462d73a118c8dd944a1840bcb3e7de0bcd9d9fe2100",
+    "block_count": 352,
+    "address_ranges": [
+      [
+        "0x10000000",
+        "0x10016000"
+      ]
+    ],
+    "family_ids": [
+      "0xe48bff56"
+    ],
+    "eeprom_overlap": false
+  },
+  "hardware_serial_verification": {
+    "captured_packet": "tests/fixtures/com9-frontpanel-v02.txt",
+    "captured_firmware": "Front Panel Test V0.2 on COM9",
+    "legacy_packet_parser_tested": true,
+    "fp03_installed_on_hardware": false,
+    "fp03_physical_telemetry_verified": false,
+    "reason": "No automatic flash; COM9 was owned by another process during V0.3 development"
+  },
+  "carried_into_chaos_engine": {
+    "output_meter_and_pwm_inversion_implemented": true,
+    "synthesis_algorithms_changed": false,
+    "upstream_pin_header_copied_exactly": true
+  }
+}
