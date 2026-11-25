@@ -49,6 +49,23 @@ class FrontPanelProtocolTests(unittest.TestCase):
         self.assertTrue(captured_line.startswith("LIVE {\"seq\":129"))
         self.assertEqual(parse_protocol_line(captured_line)["type"], "legacy")
 
+    def test_real_com9_fp03_snapshot_parses_all_packet_types(self):
+        fixture = Path(__file__).parent / "fixtures" / "com9-frontpanel-v03.txt"
+        packets = [parse_protocol_line(line) for line in fixture.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual(packets[0], {"type": "protocol", "version": PROTOCOL_VERSION})
+        self.assertEqual({packet["type"] for packet in packets},
+                         {"protocol", "controls", "encoder", "cv", "outputs", "moved", "state", "sync"})
+        a = next(packet for packet in packets if packet.get("type") == "controls" and packet["side"] == "A")
+        self.assertEqual(a["TIME"], 4089)
+
+    def test_real_com9_simulated_output_level_is_parsed(self):
+        fixture = Path(__file__).parent / "fixtures" / "com9-frontpanel-v03-output-sim.txt"
+        packet = parse_protocol_line(fixture.read_text(encoding="utf-8").strip())
+        self.assertEqual(packet["type"], "outputs")
+        self.assertEqual(packet["mode"], "SIM")
+        self.assertEqual(packet["A_PRI"], 246)
+        self.assertEqual((packet["A_SEC"], packet["B_PRI"], packet["B_SEC"]), (0, 0, 0))
+
 
 if __name__ == "__main__":
     unittest.main()

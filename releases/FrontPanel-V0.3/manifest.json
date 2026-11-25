@@ -95,12 +95,26 @@
     "eeprom_overlap": false
   },
   "hardware_serial_verification": {
-    "captured_packet": "tests/fixtures/com9-frontpanel-v02.txt",
-    "captured_firmware": "Front Panel Test V0.2 on COM9",
-    "legacy_packet_parser_tested": true,
-    "fp03_installed_on_hardware": false,
-    "fp03_physical_telemetry_verified": false,
-    "reason": "No automatic flash; COM9 was owned by another process during V0.3 development"
+    "captured_packet": [
+      "Serial-Capture-COM9.txt",
+      "Serial-Output-COM9.txt"
+    ],
+    "captured_firmware": "Front Panel Test V0.3 on Windows COM9 at 115200 baud",
+    "real_snapshot_types": [
+      "PROTO",
+      "A",
+      "B",
+      "ENC",
+      "CV",
+      "OUT",
+      "MOVED",
+      "STATE",
+      "SYNC"
+    ],
+    "fp03_installed_on_hardware": true,
+    "fp03_physical_telemetry_verified": true,
+    "output_state_during_capture": "SIM; analog and trigger disarmed",
+    "simulated_wave_test": "WAVE 0 ramp 5 produced OUT MODE=SIM A_PRI=246 with other channels at 0; STOP ALL returned levels to 0"
   },
   "carried_into_chaos_engine": {
     "output_meter_and_pwm_inversion_implemented": true,
