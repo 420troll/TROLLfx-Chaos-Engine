@@ -21,7 +21,8 @@ class FrontPanelProtocolTests(unittest.TestCase):
             "MOVED=A_TIME", "SYNC=12,8", "OK DC channel=0 percent=25 code=512 duty=1535", "ERR invalid command",
         )
         packets = [parse_protocol_line(line) for line in sample]
-        self.assertEqual(packets[0], {"type": "protocol", "version": PROTOCOL_VERSION})
+        self.assertEqual(packets[0], {"type": "protocol", "version": "FP05"})
+        self.assertNotEqual(packets[0]["version"], PROTOCOL_VERSION)
         self.assertEqual(packets[1]["MODE"], "ENV")
         self.assertEqual(packets[3]["button"], 0)
         self.assertEqual(packets[4]["values"], [1, 2, 3, 4, 5, 6, 7, 4095])

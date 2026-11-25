@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
-"""Compact Windows serial monitor and DC calibration panel for FP05."""
+"""Compact Front Panel Test V0.6 serial monitor and DC calibration panel."""
 import time
+import sys
+from pathlib import Path
+APP_DIR = Path(__file__).resolve().parent
+if str(APP_DIR) not in sys.path:
+    sys.path.insert(0, str(APP_DIR))
+GUI_VERSION = "0.6"
 import tkinter as tk
 from tkinter import messagebox, ttk
 from collections import deque
 from telemetry import PROTOCOL_VERSION, parse_protocol_line
 from calibration import fit_transfer, candidate_network
+from panel_state import PanelState, POT_IDS
 
 try:
     import serial
@@ -13,8 +20,8 @@ try:
 except ImportError:
     serial = list_ports = None
 
-POTS = (("A", "TIME"), ("A", "SHAPE"), ("A", "RATIO"),
-        ("B", "TIME"), ("B", "SHAPE"), ("B", "RATIO"))
+POTS = (("A", "TIME"), ("A", "SLOPE"), ("A", "RATIO"),
+        ("B", "TIME"), ("B", "SLOPE"), ("B", "RATIO"))
 POT_LABELS = ("A TIME", "A SLOPE", "A RATIO", "B TIME", "B SLOPE", "B RATIO")
 CV_LABELS = ("A Ratio CV", "A Slope CV", "A Mod CV", "A Exp CV",
              "B Ratio CV", "B Slope CV", "B Mod CV", "B Exp CV")
@@ -24,13 +31,18 @@ OUT_LABELS = ("A Primary", "A Secondary", "B Primary", "B Secondary")
 class App(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("TROLLfx Front Panel Test V0.5 · DC Calibration")
+        self.title("TROLLfx Front Panel Test V0.6 · DC Calibration")
         self.geometry("800x600")
         self.minsize(680, 500)
         self.port = None
         self.rx = bytearray()
         self.protocol_version = None
         self.packet_count = self.parse_errors = 0
+        self.state = PanelState()
+        self.last_valid_at = None
+        self.handshake_started = None
+        self.handshake_retries = 0
+        self._polling = False
         self.paused = False
         self.log_count = 0
         self.tx = deque()
@@ -80,7 +92,11 @@ class App(tk.Tk):
         focus = ttk.LabelFrame(p, text="Last moved", padding=5); focus.pack(fill="x")
         self.focus_name = tk.StringVar(value="Waiting for telemetry")
         ttk.Label(focus, textvariable=self.focus_name, font=("Segoe UI", 20, "bold")).pack(side="left")
-        self.focus_value = tk.StringVar(value="Raw ADC —  ·  0%")
+        self.active_choice=tk.StringVar(value="A_TIME")
+        choice=ttk.Combobox(focus,textvariable=self.active_choice,values=list(POT_IDS),width=12,state="readonly")
+        choice.pack(side="left",padx=6); choice.bind("<<ComboboxSelected>>",self.select_active)
+        self.locked=False; self.lock_button=ttk.Button(focus,text="Lock",command=self.toggle_lock); self.lock_button.pack(side="left")
+        self.focus_value = tk.StringVar(value="NORM —  ·  RAW ADC —")
         ttk.Label(focus, textvariable=self.focus_value, font=("Segoe UI", 13)).pack(side="right")
         self.focus_bar = ttk.Progressbar(focus, maximum=4095); self.focus_bar.pack(fill="x", pady=(4, 0))
         self.time_raw_text = tk.StringVar(value="Time ADC raw · A GPIO27: —  B GPIO28: —")
@@ -92,9 +108,15 @@ class App(tk.Tk):
             self.pot_bars[(side, key)] = self._meter(pots, label, i % 3, i // 3, color="#d97b22" if side == "A" else "#367bd1")
         lower = ttk.Frame(p); lower.pack(fill="x")
         switches = ttk.LabelFrame(lower, text="Mode switches", padding=4); switches.pack(side="left", fill="both", expand=True)
-        self.mode_text = {s: tk.StringVar(value=f"{s}: — · SW1 — · SW2 —") for s in ("A", "B")}
-        for s in ("A", "B"):
-            ttk.Label(switches, textvariable=self.mode_text[s], font=("Segoe UI", 11, "bold")).pack(anchor="w", pady=3)
+        self.mode_text = {s: tk.StringVar(value=f"{s}: UNKNOWN") for s in ("A", "B")}
+        self.mode_segments={}
+        for side in ("A","B"):
+            row=ttk.Frame(switches); row.pack(anchor="w",pady=3)
+            ttk.Label(row,text=f"{side} MODE",width=9,font=("Segoe UI",10,"bold")).pack(side="left")
+            self.mode_segments[side]={}
+            for mode in ("ENV","LFO","VCO"):
+                label=ttk.Label(row,text=mode,width=7,anchor="center",relief="groove",padding=3)
+                label.pack(side="left",padx=2); self.mode_segments[side][mode]=label
         self.enc_text = tk.StringVar(value="Encoder —   Encoder button —   Follow —")
         ttk.Label(lower, textvariable=self.enc_text, font=("Segoe UI", 10), wraplength=220).pack(side="left", padx=7)
         out = ttk.LabelFrame(p, text="Output signal · commanded PWM level, not measured jack voltage", padding=3); out.pack(fill="x", pady=5)
@@ -118,7 +140,7 @@ class App(tk.Tk):
     def _dc_cal(self, p):
         ttk.Label(p, text="Static DC only · 0–100% commanded signal position. No waveform generation or arming.",
                   font=("Segoe UI", 10, "bold"), wraplength=740).pack(anchor="w")
-        ttk.Label(p, text="At boot each channel holds PWM code 0. The inverted analog stage can produce a nonzero jack voltage even at code 0.",
+        ttk.Label(p, text="At boot each channel holds normalized signal code 0 (PWM compare 2047 through the inverting stage). Jack voltage must be measured; zero signal code does not imply zero volts.",
                   wraplength=740).pack(anchor="w", pady=(2, 5))
         box = ttk.LabelFrame(p, text="Four independent static outputs", padding=4); box.pack(fill="x")
         self.dc_scales = []; self.code_text = []; self.duty_text = []
@@ -167,6 +189,24 @@ class App(tk.Tk):
         ttk.Label(p, textvariable=self.network_text, wraplength=740).pack(anchor="w", pady=2)
         ttk.Label(p, text="Calculated starting values only. Confirm PCB revision, resistor population, supplies and DMM readings before any hardware modification.",
                   foreground="#9a4d00", wraplength=740).pack(anchor="w")
+
+    def select_active(self, _event=None):
+        try: self.state.select_control(self.active_choice.get(),self.locked)
+        except KeyError: pass
+        self._render_active()
+
+    def toggle_lock(self):
+        self.locked=not self.locked; self.lock_button.configure(text="Unlock" if self.locked else "Lock")
+        self.state.active_locked=self.locked
+        if not self.locked: self.state.active_id=self.active_choice.get()
+
+    def _render_active(self):
+        active=self.state.active_id
+        if active in self.state.controls:
+            item=self.state.controls[active]
+            self.focus_name.set(active.replace("_"," "))
+            self.focus_value.set(f"NORM {item.value if item.value is not None else '—'} · RAW ADC {item.raw if item.raw is not None else '—'}")
+            self.focus_bar["value"]=item.value or 0
 
     def dc_changed(self, ch, value):
         if self.updating_dc: return
@@ -225,6 +265,7 @@ class App(tk.Tk):
         entry = ttk.Frame(p); entry.pack(fill="x", pady=4)
         self.command = tk.StringVar(); ttk.Entry(entry, textvariable=self.command).pack(side="left", fill="x", expand=True)
         ttk.Button(entry, text="Send", command=self.send_custom).pack(side="left", padx=3)
+        self._append(f"GUI {Path(__file__).resolve()} · telemetry {Path(sys.modules['telemetry'].__file__).resolve()} · calibration {Path(sys.modules['calibration'].__file__).resolve()}")
 
     def refresh_ports(self):
         found = [p.device for p in list_ports.comports()] if list_ports else []
@@ -237,9 +278,11 @@ class App(tk.Tk):
             messagebox.showerror("Dependency missing", "Install dependencies with: py -m pip install -r requirements.txt"); return
         try:
             self.port = serial.Serial(self.port_var.get().strip(), 115200, timeout=0, write_timeout=1)
-            self.rx.clear(); self.protocol_version = None; self.packet_count = self.parse_errors = 0
-            self._status("Connected · waiting for FP05")
-            self.send("SNAPSHOT")
+            self.rx.clear(); self.tx.clear(); self.pending_ack.clear(); self.state=PanelState()
+            self.last_valid_at=None; self.protocol_version = None; self.packet_count = self.parse_errors = 0
+            self._status("Connected · protocol handshake pending")
+            self.handshake_started = time.monotonic(); self.handshake_retries = 0
+            self.send("PROTO?")
         except Exception as exc:
             self.port = None; messagebox.showerror("Serial connection", str(exc))
 
@@ -283,87 +326,133 @@ class App(tk.Tk):
         self.paused = not self.paused; self.pause_btn.configure(text="Resume log" if self.paused else "Pause log")
 
     def poll(self):
-        if self.port:
-            try:
-                if self.tx and (not self.pending_ack or time.monotonic() - self.pending_ack[0][1] > .08):
-                    cmd = self.tx.popleft(); self.port.write((cmd + "\n").encode("ascii")); self.pending_ack.append((cmd, time.monotonic()))
-                data = self.port.read(max(1, self.port.in_waiting)); self.rx.extend(data)
-                while b"\n" in self.rx:
-                    raw, _, tail = self.rx.partition(b"\n"); self.rx = bytearray(tail)
-                    line = raw.decode("utf-8", "replace").strip()
-                    if line: self._handle(line)
-                if self.pending_ack and time.monotonic() - self.pending_ack[0][1] > 2.0:
-                    cmd, _ = self.pending_ack.popleft(); self._append(f"! no acknowledgement: {cmd}")
-                if self.pending_ack and self.tx and time.monotonic() - self.pending_ack[0][1] > .08:
-                    pass
-            except (OSError, UnicodeError) as exc:
-                self.disconnect(); self._append(f"! serial disconnected: {exc}")
-        self.counter.set(f"Packets {self.packet_count} · errors {self.parse_errors}")
-        self.after(40, self.poll)
+        """Bounded serial work; always schedule the next GUI tick."""
+        try:
+            if self.port:
+                try:
+                    if self.handshake_started and self.protocol_version is None and time.monotonic()-self.handshake_started > 1.0:
+                        if self.handshake_retries < 3:
+                            self.handshake_retries += 1; self.handshake_started = time.monotonic(); self.send("PROTO?")
+                        else:
+                            self._status("No protocol reply · check cable/firmware")
+                    if self.tx and (not self.pending_ack or time.monotonic()-self.pending_ack[-1][1] > .08):
+                        cmd=self.tx.popleft(); self.port.write((cmd+"\n").encode("ascii")); self.pending_ack.append((cmd,time.monotonic()))
+                    available=min(int(self.port.in_waiting),4096)
+                    if available: self.rx.extend(self.port.read(available))
+                    processed=0
+                    while b"\n" in self.rx and processed < 64:
+                        raw,_,tail=self.rx.partition(b"\n"); self.rx=bytearray(tail)
+                        processed += 1
+                        try:
+                            line=raw.decode("utf-8","replace").strip()
+                            if line: self._handle(line)
+                        except Exception as exc:
+                            self.parse_errors += 1; self._append(f"! packet handler: {type(exc).__name__}: {exc}")
+                    if self.pending_ack and time.monotonic()-self.pending_ack[0][1] > 2.0:
+                        cmd,_=self.pending_ack.popleft(); self._append(f"! no acknowledgement: {cmd}")
+                except Exception as exc:
+                    self._append(f"! serial/poll error: {type(exc).__name__}: {exc}")
+                    if isinstance(exc, (OSError, getattr(serial, "SerialException", OSError))): self.disconnect()
+            age = "—" if self.last_valid_at is None else f"{time.monotonic()-self.last_valid_at:.1f}s"
+            self.counter.set(f"Packets {self.packet_count} · errors {self.parse_errors} · last valid {age}")
+        except Exception as exc:
+            try: self._append(f"! GUI poll error: {type(exc).__name__}: {exc}")
+            except Exception: pass
+        finally:
+            if not self._polling:
+                self._polling=True
+                try: self.after(40, self._poll_tick)
+                except Exception: self._polling=False
+
+    def _poll_tick(self):
+        self._polling=False
+        self.poll()
 
     def _handle(self, line):
-        self._append(line)
-        try: packet = parse_protocol_line(line)
-        except ValueError:
-            self.parse_errors += 1; return
-        kind = packet["type"]
-        if kind == "protocol":
-            self.protocol_version = packet["version"]
-            self._status("FP05 matched" if self.protocol_version == PROTOCOL_VERSION else f"Protocol mismatch: {self.protocol_version}")
-            return
-        if kind == "legacy":
-            self._status(f"Firmware mismatch · expected {PROTOCOL_VERSION}, received legacy stream"); return
-        if kind == "text": return
-        self.packet_count += 1
+        try: packet=parse_protocol_line(line)
+        except Exception as exc:
+            self.parse_errors += 1; self._append(f"! parse error: {exc} · {line[:120]}"); return
+        kind=packet.get("type")
         if kind in ("ack", "error"):
             if self.pending_ack: self.pending_ack.popleft()
-            if kind == "error": self._status("Command error · " + packet["text"])
-            elif packet["text"]: self._status("OK · " + packet["text"])
+            self._append(("! " if kind == "error" else "< ")+line)
+            if kind == "error": self._status("Command error · "+packet["text"])
+            elif packet["text"]: self._status("OK · "+packet["text"])
             return
-        if self.protocol_version != PROTOCOL_VERSION: return
-        if kind == "controls":
-            s = packet["side"]; self.control[s] = packet
-            for k in ("TIME", "SHAPE", "RATIO"):
-                bar, val = self.pot_bars[(s, k)]; raw = packet[k]; bar["value"] = raw; val.set(str(raw))
-            self.mode_text[s].set(f"{s}: {packet['MODE']} · SW1 {'HIGH' if packet['SW1'] else 'LOW'} · SW2 {'HIGH' if packet['SW2'] else 'LOW'}")
-            if self.last_moved.startswith(s + "_"): self._focus_pot(s, self.last_moved.split("_", 1)[1])
-        elif kind == "encoder":
-            self.enc_text.set(f"Encoder {packet['position']}   Encoder button {'DOWN' if packet['button'] else 'UP'}   Follow {'DOWN' if packet['follow'] else 'UP'}")
-        elif kind == "cv":
-            self.cv = packet["values"]
-            for (bar, val), raw in zip(self.cv_bars, self.cv): bar["value"] = raw; val.set(str(raw))
-        elif kind == "outputs":
-            self.output = packet["percent"]
-            self.output_codes, self.output_duty = packet["codes"], packet["duty"]
-            for ch, pct in enumerate(self.output):
-                if not self.updating_dc:
-                    self.updating_dc = True; self.dc_scales[ch].set(pct); self.updating_dc = False
-                self.code_text[ch].set(f"SIGNAL {self.output_codes[ch]}")
-                self.duty_text[ch].set(f"PWM CODE {self.output_duty[ch]}")
-            for (bar, val), pct in zip(self.out_bars, self.output):
-                level = pct * 4095 // 100; bar["value"] = level; val.set(f"{pct}%")
-        elif kind == "moved":
-            self.last_moved = packet["name"]
-            name = packet["name"]
-            for side in ("A", "B"):
-                for key in ("TIME", "SHAPE", "RATIO"):
-                    if name == f"{side}_{key}": self._focus_pot(side, key); return
-            if name in ("A_SW1", "A_SW2", "B_SW1", "B_SW2", "ENCODER_BUTTON", "FOLLOW_BUTTON"):
-                self.focus_name.set(name.replace("_", " ")); self.focus_value.set("Input changed"); self.focus_bar["value"] = 0
-            elif name.startswith("ENCODER"):
-                self.focus_name.set("ENCODER"); self.focus_value.set(self.enc_text.get()); self.focus_bar["value"] = 0
-        elif kind == "timeraw":
-            self.time_raw_text.set(f"Time ADC raw · A GPIO27: {packet['a']}  B GPIO28: {packet['b']}")
-        elif kind == "timediag":
-            self.time_diag.set(f"A scan/direct/SDK {packet['A_SCAN']}/{packet['A_ARDUINO']}/{packet['A_SDK']} · "
-                               f"B {packet['B_SCAN']}/{packet['B_ARDUINO']}/{packet['B_SDK']}")
-        elif kind == "sync": self.sync_text.set(f"A edges: {packet['a']}    B edges: {packet['b']}")
+        if kind == "protocol":
+            self.protocol_version=packet["version"]
+            if self.protocol_version != PROTOCOL_VERSION:
+                self._status(f"Protocol mismatch · firmware {self.protocol_version}, GUI {PROTOCOL_VERSION}")
+                # Continue accepting compatible telemetry instead of freezing meters.
+                self.send("SNAPSHOT")
+            else:
+                self._status("Protocol FP06 · confirming GUI version")
+                self.send(f"HELLO GUI={GUI_VERSION}")
+            return
+        if kind == "handshake":
+            if packet["firmware"] != PROTOCOL_VERSION or packet["gui"] != GUI_VERSION:
+                self._status(f"Version mismatch · FW {packet['firmware']} / GUI {packet['gui']}")
+            else:
+                self._status(f"Connected · FP06 / GUI {GUI_VERSION}"); self.send("SNAPSHOT")
+            return
+        if kind in ("text", "legacy"):
+            if kind == "legacy": self._append("< "+line)
+            return
+        self.packet_count += 1; self.last_valid_at=time.monotonic()
+        try:
+            accepted=self.state.accept(packet)
+            if not accepted:
+                self.parse_errors += 1; self._append(f"! unsupported packet type: {kind}"); return
+            self._update_widgets(packet)
+            if kind in ("timediag", "ack", "error"): self._append("< "+line)
+        except Exception as exc:
+            self.parse_errors += 1; self._append(f"! widget update: {type(exc).__name__}: {exc}")
+
+    def _update_widgets(self, packet):
+        kind=packet["type"]
+        if kind in ("control", "controls", "timeraw"):
+            for ident, (side,key) in zip(POT_IDS, POTS):
+                item=self.state.controls[ident]
+                bar,val=self.pot_bars[(side,key)]
+                normalized=item.value if item.value is not None else (4095-item.raw if item.raw is not None else 0)
+                bar["value"]=normalized; val.set("—" if item.raw is None else f"{normalized*100//4095}%")
+            self.time_raw_text.set(f"Time ADC raw · A GPIO27: {self.state.controls['A_TIME'].raw if self.state.controls['A_TIME'].raw is not None else '—'}  B GPIO28: {self.state.controls['B_TIME'].raw if self.state.controls['B_TIME'].raw is not None else '—'}")
+        if kind == "cv":
+            for (bar,val),item in zip(self.cv_bars,[self.state.controls[x] for x in ("A_RATIO_CV","A_SLOPE_CV","A_MOD_CV","A_EXP_CV","B_RATIO_CV","B_SLOPE_CV","B_MOD_CV","B_EXP_CV")]):
+                bar["value"]=item.value or 0; val.set("—" if item.raw is None else str(item.raw))
+        if kind in ("switch","controls"):
+            for side in ("A","B"):
+                mode=self.state.modes[side]
+                self.mode_text[side].set(f"{side}: {mode}")
+                for name,label in self.mode_segments[side].items():
+                    label.configure(relief="sunken" if name==mode else "groove", foreground="#117733" if name==mode else "#666666")
+                if mode=="INVALID": self._append(f"! {side} mode switch invalid/transitional (both inputs active)")
+        if kind in ("encoder","encoder_position","button"):
+            self.enc_text.set(f"Encoder {self.state.encoder}   Encoder button {'DOWN' if self.state.encoder_button else 'UP'}   Follow {'DOWN' if self.state.follow_button else 'UP'}")
+        if kind == "outputs":
+            self.output=[self.state.outputs[x]["percent"] for x in self.state.outputs]
+            self.output_codes=[self.state.outputs[x]["signal_code"] for x in self.state.outputs]
+            self.output_duty=[self.state.outputs[x]["pwm_code"] for x in self.state.outputs]
+            for ch,pct in enumerate(self.output):
+                self.updating_dc=True; self.dc_scales[ch].set(pct); self.updating_dc=False
+                self.code_text[ch].set(f"SIGNAL {self.output_codes[ch]}"); self.duty_text[ch].set(f"PWM CODE {self.output_duty[ch]}")
+                self.out_bars[ch][0]["value"]=self.output_codes[ch]*4095//2047; self.out_bars[ch][1].set(f"{pct}%")
+        if kind == "moved":
+            self.last_moved=packet["name"]
+        active=self.state.active_id
+        if active in POT_IDS: self.active_choice.set(active)
+        self._render_active()
+        if kind == "timediag":
+            self.time_diag.set(f"A scan/direct/SDK {packet['A_SCAN']}/{packet['A_ARDUINO']}/{packet['A_SDK']} · B {packet['B_SCAN']}/{packet['B_ARDUINO']}/{packet['B_SDK']}")
+        if kind == "sync": self.sync_text.set(f"A edges: {packet['a']}    B edges: {packet['b']}")
 
     def _focus_pot(self, side, key):
-        packet = self.control.get(side, {}).get(key)
-        if packet is None: return
-        self.focus_name.set(f"{side} {key}"); self.focus_value.set(f"Raw ADC {packet}  ·  {packet * 100 // 4095}%")
-        self.focus_bar["value"] = packet
+        ident=f"{side}_{'SLOPE' if key == 'SHAPE' else key}"
+        item=self.state.controls.get(ident)
+        if not item or item.raw is None: return
+        self.focus_name.set(ident.replace("_"," "))
+        self.focus_value.set(f"NORM {item.value if item.value is not None else '—'} · RAW ADC {item.raw}")
+        self.focus_bar["value"]=item.value if item.value is not None else 0
 
 
 if __name__ == "__main__":

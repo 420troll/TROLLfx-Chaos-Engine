@@ -1,0 +1,25 @@
+{
+  "release": "FrontPanel-Test-V0.6",
+  "branch": "feature/front-panel-test",
+  "baseline": "17a2bff37d2d86caefac9480a623856a3059529b",
+  "board_fqbn": "rp2040:rp2040:arduino_nano_connect",
+  "rp2040_core": "3.9.5",
+  "flash_configuration": "flash=16777216_0 (16 MB; final 4 KiB reserved for EEPROM emulation)",
+  "python_gui": "FrontPanel-GUI.py",
+  "python_version": "3.x",
+  "python_dependencies": {"pyserial": ">=3.5"},
+  "uf2": "FrontPanel-Test-V0.6.uf2",
+  "uf2_address_ranges": [["0x10000000", "0x10015700"]],
+  "eeprom_reserved_range": ["0x10FFF000", "0x11000000"],
+  "eeprom_overlap": false,
+  "eeprom_api_or_write_calls": false,
+  "hardware_flashed": false,
+  "physical_fp05_fp06_serial_capture": false,
+  "available_physical_fixture": "tests/fixtures/com9-frontpanel-v03.txt (FP03 only)",
+  "physical_serial_status_at_build": "COM9 not enumerated; F: volume was RPI-RP2 BOOTSEL",
+  "verification": {
+    "arduino_build": "passed",
+    "python_compile": "passed",
+    "automated_tests": "17 passed"
+  }
+}

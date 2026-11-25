@@ -1,4 +1,4 @@
-// TROLLfx Front Panel Test V0.5 DC Calibration
+// TROLLfx Front Panel Test V0.6 Reliability Repair; static DC calibration retained
 // Diagnostic firmware using the SpellTwister GPIO, LED and mux wiring.
 // This sketch does not access calibration storage.
 #include <Arduino.h>
@@ -18,7 +18,8 @@ static constexpr uint8_t kChannelCount = 4;
 static constexpr uint8_t kInputCount = 18;
 static constexpr uint16_t kAdcMax = 4095;
 static constexpr uint16_t kPwmTop = 2047;
-static constexpr uint32_t kSamplePeriodUs = 100000;  // 10 Hz live meter report
+static constexpr uint32_t kScanPeriodUs = 5000;      // 200 Hz control scan
+static constexpr uint32_t kReportPeriodUs = 100000;  // 10 Hz USB state report
 static constexpr uint32_t black = 0x000000;
 static constexpr uint32_t a_colour = 0xFFA500;
 static constexpr uint32_t b_colour = 0x0000FF;
@@ -31,16 +32,25 @@ static constexpr uint8_t kMuxSignals[2][8] = {
   {R_CV_A, R_POT_A, S_CV_A, S_POT_A, M_CV_A, SW_1_A, SW_2_A, EXP_CV_A},
   {R_CV_B, R_POT_B, S_CV_B, S_POT_B, M_CV_B, SW_1_B, SW_2_B, EXP_CV_B}
 };
-static const char *const kSwitchNames[4] = {"A_SW1", "A_SW2", "B_SW1", "B_SW2"};
-static const char *const kInputNames[kInputCount] = {
-  "A_TIME", "A_RATIO", "A_SHAPE", "B_TIME", "B_RATIO", "B_SHAPE",
-  "A_RATIO_CV", "A_SHAPE_CV", "A_MOD_CV", "A_EXP_CV",
-  "B_RATIO_CV", "B_SHAPE_CV", "B_MOD_CV", "B_EXP_CV",
-  "A_SW1", "A_SW2", "B_SW1", "B_SW2"
+enum ControlType : uint8_t { CONTROL_POT, CONTROL_CV, CONTROL_SWITCH };
+struct ControlState {
+  const char *id;
+  char side;
+  ControlType type;
+  uint16_t raw = 0;
+  uint16_t filteredRaw = 0;
+  uint16_t normalized = 0;
+  bool seeded = false;
 };
-
-struct InputStats { uint16_t low = kAdcMax, high = 0, latest = 0; };
+struct InputStats { uint16_t low = kAdcMax, high = 0; };
 enum LedMode : uint8_t { LED_LIVE, LED_STARTUP, LED_ONE, LED_RGB, LED_RING };
+static ControlState controls[kInputCount] = {
+  {"A_TIME",'A',CONTROL_POT}, {"A_RATIO",'A',CONTROL_POT}, {"A_SLOPE",'A',CONTROL_POT},
+  {"B_TIME",'B',CONTROL_POT}, {"B_RATIO",'B',CONTROL_POT}, {"B_SLOPE",'B',CONTROL_POT},
+  {"A_RATIO_CV",'A',CONTROL_CV}, {"A_SLOPE_CV",'A',CONTROL_CV}, {"A_MOD_CV",'A',CONTROL_CV}, {"A_EXP_CV",'A',CONTROL_CV},
+  {"B_RATIO_CV",'B',CONTROL_CV}, {"B_SLOPE_CV",'B',CONTROL_CV}, {"B_MOD_CV",'B',CONTROL_CV}, {"B_EXP_CV",'B',CONTROL_CV},
+  {"A_SW1",'A',CONTROL_SWITCH}, {"A_SW2",'A',CONTROL_SWITCH}, {"B_SW1",'B',CONTROL_SWITCH}, {"B_SW2",'B',CONTROL_SWITCH}
+};
 
 static int8_t ledPins[8] = LED_DATA;
 static Adafruit_NeoPXL8 leds(NUM_LEDS, ledPins, NEO_GRB);
@@ -50,14 +60,12 @@ static Encoder encoder(ALGO_ENC_1, ALGO_ENC_2);
 static uint16_t outputCode[kChannelCount] = {0, 0, 0, 0};
 static uint8_t outputPercent[kChannelCount] = {0, 0, 0, 0};
 static InputStats inputStats[kInputCount];
-static uint16_t potReadings[6] = {0};
-static uint16_t cvReadings[8] = {0};
-static uint16_t switchReadings[4] = {0};
 static bool syncEnabled = false;
 static volatile uint32_t syncCounts[2] = {0, 0};
 static volatile bool syncLedPending[2] = {false, false};
 static uint32_t syncLedDeadline[2] = {0, 0};
-static uint32_t nextSampleUs = 0;
+static uint32_t nextScanUs = 0;
+static uint32_t nextReportUs = 0;
 static uint32_t lastLedRefreshMs = 0;
 static uint32_t ledFrameMs = 0;
 static uint8_t ledFrame = 0;
@@ -71,22 +79,22 @@ static int64_t encoderPosition = 0;
 static int64_t previousEncoderPosition = 0;
 static uint8_t lastMovedInput = 0;
 static uint8_t lastMovedRing = 0;
+static uint32_t activeHoldUntilMs = 0;
+static uint32_t lastMoveAtMs[kInputCount] = {0};
 static bool previousEncoderButton = false, previousFollowButton = false;
-static uint16_t previousSwitches[4] = {0, 0, 0, 0};
-static bool switchBaselineReady = false;
 static bool encoderButtonState = false, followButtonState = false;
 static uint32_t feedbackUntilMs = 0;
 static uint8_t feedbackPixel = FLW_LED;
 static bool changeOnly = false;
 static bool serialConnected = false;
-static String previousTelemetry[8];
+static String previousTelemetry[20];
 static LedMode ledMode = LED_LIVE;
 static String commandLine;
 
 static void printHelp() {
-  Serial.println("PROTO=FP05");
-  Serial.println("FrontPanel-Test-V0.5; outputs hold static DC codes; calibration storage untouched");
-  Serial.println("SNAPSHOT | DC ch percent | DC? | TIME DIAG | DIAG | STATS | ADC DIRECT");
+  Serial.println("PROTO=FP06");
+  Serial.println("FrontPanel-Test-V0.6; outputs hold static DC codes; calibration storage untouched");
+  Serial.println("PROTO? | HELLO GUI=0.6 | SNAPSHOT | DC ch percent | DC? | TIME DIAG | DIAG | STATS");
   Serial.println("LED STARTUP | LED ONE index r g b | LED RGB | LED RING | LED LIVE | BRIGHTNESS 0..255 | INDICATOR ch 0..255 | INDICATOR LIVE");
   Serial.println("SYNC ON | SYNC OFF | SYNC? | output channel 0 A_PRI, 1 A_SEC, 2 B_PRI, 3 B_SEC");
 }
@@ -99,77 +107,115 @@ static void setOutputPercent(uint8_t channel, uint8_t percent) {
   pwm_set_gpio_level(kOutputPins[channel], (uint16_t)(kPwmTop - outputCode[channel]));
 }
 
+static uint16_t movementBaseline[kInputCount] = {0};
+static bool movementBaselineReady = false;
+static bool switchHigh[4] = {false, false, false, false};
+static const uint16_t kPotMoveThreshold = 24;
+static const uint16_t kCvMoveThreshold = 64;
+static constexpr uint32_t kActiveHoldMs = 750;
+static constexpr uint32_t kMoveDebounceMs = 70;
+
 static void updateInput(uint8_t index, uint16_t raw) {
   if (index >= kInputCount) return;
   if (raw > kAdcMax) raw = kAdcMax;
-  inputStats[index].latest = raw;
+  ControlState &c = controls[index];
+  c.raw = raw;  // Preserve unfiltered ADC data as the canonical raw reading.
+  if (!c.seeded) { c.filteredRaw = raw; c.seeded = true; }
+  else c.filteredRaw = (uint16_t)(((uint32_t)c.filteredRaw * 3u + raw + 2u) / 4u);
+  c.normalized = c.type == CONTROL_POT ? (uint16_t)(kAdcMax - c.filteredRaw) : c.filteredRaw;
   if (raw < inputStats[index].low) inputStats[index].low = raw;
   if (raw > inputStats[index].high) inputStats[index].high = raw;
 }
 
-static uint16_t normalizedPot(uint8_t index) { return index < 6 ? (uint16_t)(kAdcMax - potReadings[index]) : 0; }
-static uint8_t normalizedRingPosition(uint16_t raw) { return (uint8_t)(((uint32_t)(kAdcMax - raw) * NUM_RING_LEDS) / 4096u); }
+static uint8_t normalizedRingPosition(uint16_t value) { return (uint8_t)(((uint32_t)value * NUM_RING_LEDS) / 4096u); }
+static void activateControl(uint8_t index, uint32_t nowMs) {
+  if (index >= kInputCount) return;
+  lastMovedInput = index;
+  lastMovedRing = normalizedRingPosition(controls[index].normalized);
+  movementBaseline[index] = controls[index].normalized;
+  lastMoveAtMs[index] = nowMs;
+  activeHoldUntilMs = nowMs + kActiveHoldMs;
+}
+static void activateSpecial(uint8_t index, uint32_t nowMs) {
+  lastMovedInput = index;
+  activeHoldUntilMs = nowMs + kActiveHoldMs;
+}
+
 static void detectLastMoved() {
-  static uint16_t previous[kInputCount] = {0};
-  static bool baselineReady = false;
-  if (!baselineReady) { for (uint8_t i=0;i<kInputCount;++i) previous[i]=inputStats[i].latest; baselineReady=true; return; }
-  for (uint8_t i = 0; i < kInputCount; ++i) {
-    if (i >= 14) continue;
-    uint16_t now = inputStats[i].latest;
-    uint16_t delta = now > previous[i] ? now - previous[i] : previous[i] - now;
-    if (delta >= 24) { lastMovedInput = i; lastMovedRing = normalizedRingPosition(now); previous[i] = now; }
+  uint32_t now = millis();
+  if (!movementBaselineReady) {
+    for (uint8_t i=0;i<kInputCount;++i) movementBaseline[i]=controls[i].normalized;
+    for (uint8_t i=0;i<4;++i) switchHigh[i]=controls[14+i].raw > kAdcMax/2;
+    movementBaselineReady=true; return;
   }
-  if (!switchBaselineReady) { for(uint8_t i=0;i<4;++i)previousSwitches[i]=switchReadings[i];switchBaselineReady=true; }
-  else for(uint8_t i=0;i<4;++i) if ((switchReadings[i]>kAdcMax/2)!=(previousSwitches[i]>kAdcMax/2)) {
-    lastMovedInput=21+i; feedbackPixel=(i<2)?(i==0?PRI_A_LED:SEC_A_LED):(i==2?PRI_B_LED:SEC_B_LED);feedbackUntilMs=millis()+180;
-    previousSwitches[i]=switchReadings[i];
+  int8_t bestPot = -1; uint16_t bestPotDelta = 0;
+  for (uint8_t i=0;i<6;++i) {
+    uint16_t value=controls[i].normalized;
+    uint16_t delta=value>movementBaseline[i]?value-movementBaseline[i]:movementBaseline[i]-value;
+    if(delta>=kPotMoveThreshold && now-lastMoveAtMs[i]>=kMoveDebounceMs && delta>bestPotDelta) { bestPot=i; bestPotDelta=delta; }
+  }
+  int8_t candidate = bestPot; uint16_t bestDelta=bestPotDelta;
+  if(candidate<0) {
+    for(uint8_t i=6;i<14;++i) {
+      uint16_t value=controls[i].normalized;
+      uint16_t delta=value>movementBaseline[i]?value-movementBaseline[i]:movementBaseline[i]-value;
+      if(delta>=kCvMoveThreshold && now-lastMoveAtMs[i]>=kMoveDebounceMs && delta>bestDelta) { candidate=i; bestDelta=delta; }
+    }
+  }
+  if(candidate>=0 && (lastMovedInput==(uint8_t)candidate || (int32_t)(now-activeHoldUntilMs)>=0)) activateControl((uint8_t)candidate,now);
+
+  // Hysteresis on muxed switch ADC readings avoids chatter around half scale.
+  for(uint8_t i=0;i<4;++i) {
+    uint16_t raw=controls[14+i].raw;
+    bool next=switchHigh[i];
+    if(raw>=2800) next=true; else if(raw<=1300) next=false;
+    if(next!=switchHigh[i]) {
+      switchHigh[i]=next;
+      activateControl((uint8_t)(14+i),now);
+      feedbackPixel=(i<2)?(i==0?PRI_A_LED:SEC_A_LED):(i==2?PRI_B_LED:SEC_B_LED);
+      feedbackUntilMs=now+180;
+    }
   }
 }
 
 static void scanSideA() {
-  // Match Waveformer::read_all(): EXP/pitch, direct time, shape pot/CV, ratio pot/CV, mod CV.
-  cvReadings[3] = muxA.read(EXP_CV_A);
-  potReadings[0] = analogRead(LIN_TIME_A);
-  potReadings[2] = muxA.read(S_POT_A); cvReadings[1] = muxA.read(S_CV_A);
-  potReadings[1] = muxA.read(R_POT_A); cvReadings[0] = muxA.read(R_CV_A);
-  cvReadings[2] = muxA.read(M_CV_A);
-  switchReadings[0] = muxA.read(SW_1_A); switchReadings[1] = muxA.read(SW_2_A);
+  // Match upstream read_all() order and retain every reading in the canonical control table.
+  updateInput(9,muxA.read(EXP_CV_A));
+  updateInput(0,analogRead(LIN_TIME_A));
+  updateInput(2,muxA.read(S_POT_A)); updateInput(7,muxA.read(S_CV_A));
+  updateInput(1,muxA.read(R_POT_A)); updateInput(6,muxA.read(R_CV_A));
+  updateInput(8,muxA.read(M_CV_A));
+  updateInput(14,muxA.read(SW_1_A)); updateInput(15,muxA.read(SW_2_A));
 }
 static void scanSideB() {
-  cvReadings[7] = muxB.read(EXP_CV_B);
-  potReadings[3] = analogRead(LIN_TIME_B);
-  potReadings[5] = muxB.read(S_POT_B); cvReadings[5] = muxB.read(S_CV_B);
-  potReadings[4] = muxB.read(R_POT_B); cvReadings[4] = muxB.read(R_CV_B);
-  cvReadings[6] = muxB.read(M_CV_B);
-  switchReadings[2] = muxB.read(SW_1_B); switchReadings[3] = muxB.read(SW_2_B);
+  updateInput(13,muxB.read(EXP_CV_B));
+  updateInput(3,analogRead(LIN_TIME_B));
+  updateInput(5,muxB.read(S_POT_B)); updateInput(11,muxB.read(S_CV_B));
+  updateInput(4,muxB.read(R_POT_B)); updateInput(10,muxB.read(R_CV_B));
+  updateInput(12,muxB.read(M_CV_B));
+  updateInput(16,muxB.read(SW_1_B)); updateInput(17,muxB.read(SW_2_B));
 }
-static void sampleInputs() {
-  scanSideA(); scanSideB();
-  for(uint8_t i=0;i<6;++i) updateInput(i,potReadings[i]);
-  for (uint8_t i = 0; i < 8; ++i) updateInput(6 + i, cvReadings[i]);
-  for (uint8_t i = 0; i < 4; ++i) updateInput(14 + i, switchReadings[i]);
-  detectLastMoved();
-}
+static void sampleInputs() { scanSideA(); scanSideB(); detectLastMoved(); }
 
 static const char *modeA() {
-  bool s1 = switchReadings[0] > kAdcMax / 2, s2 = switchReadings[1] > kAdcMax / 2;
-  if (s1 && !s2) return "ENV";
-  if (!s1 && s2) return "VCO";
+  bool s1=controls[14].raw>kAdcMax/2, s2=controls[15].raw>kAdcMax/2;
+  if(s1&&s2) return "INVALID";
+  if(s1) return "ENV";
+  if(s2) return "VCO";
   return "LFO";
 }
 static const char *modeB() {
-  bool s1 = switchReadings[2] > kAdcMax / 2, s2 = switchReadings[3] > kAdcMax / 2;
-  if (s1 && !s2) return "VCO";
-  if (!s1 && s2) return "ENV";
+  bool s1=controls[16].raw>kAdcMax/2, s2=controls[17].raw>kAdcMax/2;
+  if(s1&&s2) return "INVALID";
+  if(s1) return "VCO";
+  if(s2) return "ENV";
   return "LFO";
 }
-
 static const char *movedName(uint8_t index) {
-  if (index < kInputCount) return kInputNames[index];
-  if (index == 18) return "ENCODER";
-  if (index == 19) return "ENCODER_BUTTON";
-  if (index == 20) return "FOLLOW_BUTTON";
-  if (index >= 21 && index < 25) return kSwitchNames[index - 21];
+  if(index<kInputCount) return controls[index].id;
+  if(index==18) return "ENCODER";
+  if(index==19) return "ENCODER_BUTTON";
+  if(index==20) return "FOLLOW_BUTTON";
   return "NONE";
 }
 
@@ -184,54 +230,54 @@ static void sendTelemetry(uint8_t slot, const String &line, bool force) {
 }
 
 static void reportTelemetry(bool force = false) {
-  char line[192];
-  snprintf(line, sizeof(line), "A TIME=%u SHAPE=%u RATIO=%u MODE=%s SW1=%u SW2=%u",
-      normalizedPot(0), normalizedPot(2), normalizedPot(1), modeA(),
-      switchReadings[0] > kAdcMax/2, switchReadings[1] > kAdcMax/2);
-  sendTelemetry(0, String(line), force);
-  snprintf(line, sizeof(line), "B TIME=%u SHAPE=%u RATIO=%u MODE=%s SW1=%u SW2=%u",
-      normalizedPot(3), normalizedPot(5), normalizedPot(4), modeB(),
-      switchReadings[2] > kAdcMax/2, switchReadings[3] > kAdcMax/2);
-  sendTelemetry(1, String(line), force);
-  snprintf(line, sizeof(line), "ENC=%ld BTN=%u FOLLOW=%u",
-      (long)encoderPosition, encoderButtonState, followButtonState);
-  sendTelemetry(2, String(line), force);
-  snprintf(line, sizeof(line), "CV=%u,%u,%u,%u,%u,%u,%u,%u",
-      cvReadings[0],cvReadings[1],cvReadings[2],cvReadings[3],cvReadings[4],cvReadings[5],cvReadings[6],cvReadings[7]);
-  sendTelemetry(3, String(line), force);
-  snprintf(line, sizeof(line), "OUT PCT=%u,%u,%u,%u CODE=%u,%u,%u,%u DUTY=%u,%u,%u,%u",
+  char line[160];
+  for(uint8_t i=0;i<6;++i) {
+    snprintf(line,sizeof(line),"CTRL ID=%s RAW=%u VALUE=%u",controls[i].id,controls[i].raw,controls[i].normalized);
+    sendTelemetry(i,String(line),force);
+  }
+  snprintf(line,sizeof(line),"SWITCH A MODE=%s SW1_RAW=%u SW2_RAW=%u",modeA(),controls[14].raw,controls[15].raw);
+  sendTelemetry(6,String(line),force);
+  snprintf(line,sizeof(line),"SWITCH B MODE=%s SW1_RAW=%u SW2_RAW=%u",modeB(),controls[16].raw,controls[17].raw);
+  sendTelemetry(7,String(line),force);
+  snprintf(line,sizeof(line),"ENCODER %ld",(long)encoderPosition); sendTelemetry(8,String(line),force);
+  sendTelemetry(9,String("ENCODER_BUTTON ")+(encoderButtonState?"ON":"OFF"),force);
+  sendTelemetry(10,String("FOLLOW_BUTTON ")+(followButtonState?"ON":"OFF"),force);
+  snprintf(line,sizeof(line),"CV=%u,%u,%u,%u,%u,%u,%u,%u",
+      controls[6].raw,controls[7].raw,controls[8].raw,controls[9].raw,
+      controls[10].raw,controls[11].raw,controls[12].raw,controls[13].raw);
+  sendTelemetry(11,String(line),force);
+  snprintf(line,sizeof(line),"OUT PCT=%u,%u,%u,%u CODE=%u,%u,%u,%u DUTY=%u,%u,%u,%u",
       outputPercent[0],outputPercent[1],outputPercent[2],outputPercent[3],
       outputCode[0],outputCode[1],outputCode[2],outputCode[3],
       kPwmTop-outputCode[0],kPwmTop-outputCode[1],kPwmTop-outputCode[2],kPwmTop-outputCode[3]);
-  sendTelemetry(4, String(line), force);
-  snprintf(line, sizeof(line), "TIMERAW=%u,%u", potReadings[0], potReadings[3]);
-  sendTelemetry(5, String(line), force);
-  snprintf(line, sizeof(line), "MOVED=%s", movedName(lastMovedInput));
-  sendTelemetry(6, String(line), force);
-  snprintf(line, sizeof(line), "SYNC=%lu,%lu", (unsigned long)syncCounts[0], (unsigned long)syncCounts[1]);
-  sendTelemetry(7, String(line), force);
+  sendTelemetry(12,String(line),force);
+  snprintf(line,sizeof(line),"TIMERAW=%u,%u",controls[0].raw,controls[3].raw);
+  sendTelemetry(13,String(line),force);
+  snprintf(line,sizeof(line),"MOVED=%s",movedName(lastMovedInput)); sendTelemetry(14,String(line),force);
+  snprintf(line,sizeof(line),"SYNC=%lu,%lu",(unsigned long)syncCounts[0],(unsigned long)syncCounts[1]);
+  sendTelemetry(15,String(line),force);
 }
 
 static void printSnapshot() {
-  Serial.println("PROTO=FP05");
+  Serial.println("PROTO=FP06");
   reportTelemetry(true);
 }
 
 static void pollPanelControls() {
   encoderPosition = -encoder.read();  // Front-panel test: clockwise is increasing.
   if (encoderPosition != previousEncoderPosition) {
-    lastMovedInput = 18;
+    activateSpecial(18,millis());
     lastMovedRing = (uint8_t)(((encoderPosition / 4) % NUM_RING_LEDS + NUM_RING_LEDS) % NUM_RING_LEDS);
     previousEncoderPosition = encoderPosition;
   }
   bool encPressed = digitalRead(ALGO_BTN) == LOW;
   bool followPressed = digitalRead(FLW_BTN) == HIGH;
   if (encPressed && !previousEncoderButton) {
-    lastMovedInput = 19; lastMovedRing = (uint8_t)(((encoderPosition/4)%NUM_RING_LEDS+NUM_RING_LEDS)%NUM_RING_LEDS);
+    activateSpecial(19,millis()); lastMovedRing = (uint8_t)(((encoderPosition/4)%NUM_RING_LEDS+NUM_RING_LEDS)%NUM_RING_LEDS);
     feedbackPixel=FLW_LED; feedbackUntilMs=millis()+180;
   }
   if (followPressed && !previousFollowButton) {
-    lastMovedInput = 20; feedbackPixel=FLW_LED; feedbackUntilMs=millis()+180;
+    activateSpecial(20,millis()); feedbackPixel=FLW_LED; feedbackUntilMs=millis()+180;
   }
   previousEncoderButton=encPressed; previousFollowButton=followPressed;
   encoderButtonState=encPressed; followButtonState=followPressed;
@@ -296,8 +342,9 @@ static void syncB() { ++syncCounts[1]; syncLedPending[1] = true; }
 
 static void printStats() {
   for (uint8_t i = 0; i < kInputCount; ++i) {
-    Serial.print("RANGE "); Serial.print(kInputNames[i]); Serial.print(" min="); Serial.print(inputStats[i].low);
-    Serial.print(" max="); Serial.print(inputStats[i].high); Serial.print(" noise="); Serial.println(inputStats[i].high - inputStats[i].low);
+    Serial.print("RANGE "); Serial.print(controls[i].id); Serial.print(" raw="); Serial.print(controls[i].raw);
+    Serial.print(" min="); Serial.print(inputStats[i].low); Serial.print(" max="); Serial.print(inputStats[i].high);
+    Serial.print(" noise="); Serial.println(inputStats[i].high-inputStats[i].low);
   }
 }
 
@@ -308,9 +355,16 @@ static void handleCommand(String line) {
   if (sscanf(line.c_str(), "%19s", op) != 1) return;
   if (!strcmp(op, "HELP")) { printHelp(); return; }
   if (!strcmp(op, "INFO")) {
-    Serial.print("INFO protocol=FP05 mode=DC outputs=static sync_enabled="); Serial.print(syncEnabled);
+    Serial.print("INFO protocol=FP06 mode=DC outputs=static sync_enabled="); Serial.print(syncEnabled);
     Serial.print(" brightness="); Serial.print(brightness); Serial.print(" mux_a="); Serial.print(MUX_A);
     Serial.print(" mux_b="); Serial.println(MUX_B); return;
+  }
+  if (line == "PROTO?") { Serial.println("PROTO=FP06"); return; }
+  if (!strncmp(line.c_str(), "HELLO GUI=", 10)) {
+    char guiVersion[16]={0};
+    if(sscanf(line.c_str(),"HELLO GUI=%15s",guiVersion)==1) { Serial.print("HELLO FW=FP06 GUI=");Serial.println(guiVersion); }
+    else Serial.println("ERR HELLO GUI=version");
+    return;
   }
   if (line == "SNAPSHOT") { Serial.println("OK snapshot follows"); sampleInputs(); pollPanelControls(); printSnapshot(); return; }
   if (line == "DC?") { Serial.println("OK DC state follows"); reportTelemetry(true); return; }
@@ -337,8 +391,8 @@ static void handleCommand(String line) {
     uint16_t ar27=analogRead(LIN_TIME_A); adc_select_input(1); uint16_t sdk27=adc_read();
     uint16_t ar28=analogRead(LIN_TIME_B); adc_select_input(2); uint16_t sdk28=adc_read();
     Serial.println("OK TIME diagnostics follow");
-    Serial.print("TIME A_GPIO=27 A_SCAN="); Serial.print(potReadings[0]); Serial.print(" A_ARDUINO="); Serial.print(ar27); Serial.print(" A_SDK="); Serial.print(sdk27);
-    Serial.print(" B_GPIO=28 B_SCAN="); Serial.print(potReadings[3]); Serial.print(" B_ARDUINO="); Serial.print(ar28); Serial.print(" B_SDK="); Serial.println(sdk28); return;
+    Serial.print("TIME A_GPIO=27 A_SCAN="); Serial.print(controls[0].raw); Serial.print(" A_ARDUINO="); Serial.print(ar27); Serial.print(" A_SDK="); Serial.print(sdk27);
+    Serial.print(" B_GPIO=28 B_SCAN="); Serial.print(controls[3].raw); Serial.print(" B_ARDUINO="); Serial.print(ar28); Serial.print(" B_SDK="); Serial.println(sdk28); return;
   }
   if (!strcmp(op, "ARM") || !strcmp(op, "DISARM")) { Serial.println("ERR DC outputs apply immediately; there is no arming state"); return; }
   if (!strcmp(op, "LED")) {
@@ -371,7 +425,7 @@ static void handleCommand(String line) {
     Serial.println("ERR SYNC ON|OFF|?");return;
   }
   if (line == "STATS") { printStats();return; }
-  if (line == "RESET STATS") { for(uint8_t i=0;i<kInputCount;++i){inputStats[i].low=inputStats[i].latest;inputStats[i].high=inputStats[i].latest;}Serial.println("OK stats reset");return; }
+  if (line == "RESET STATS") { for(uint8_t i=0;i<kInputCount;++i){inputStats[i].low=controls[i].raw;inputStats[i].high=controls[i].raw;}Serial.println("OK stats reset");return; }
   Serial.println("ERR unknown command; HELP");
 }
 
@@ -394,7 +448,7 @@ void setup() {
   Serial.begin(115200);
   leds.begin();leds.setBrightness(brightness);leds.fill(black);leds.show();
   setupPwm();
-  nextSampleUs=micros();
+  nextScanUs=micros(); nextReportUs=nextScanUs+kReportPeriodUs;
   for(uint8_t i=0;i<kChannelCount;++i) setOutputPercent(i,0);
   ledMode=LED_STARTUP;ledFrame=0;ledFrameMs=millis();
   sampleInputs();
@@ -404,7 +458,8 @@ void loop() {
   bool connected = (bool)Serial;
   if (connected && !serialConnected) { serialConnected=true; sampleInputs(); pollPanelControls(); printSnapshot(); }
   else if (!connected) serialConnected=false;
-  while(Serial.available()){
+  uint8_t commandBudget=64;
+  while(Serial.available() && commandBudget--){
     char ch=(char)Serial.read();
     if(ch=='\n'||ch=='\r'){if(commandLine.length())handleCommand(commandLine);commandLine="";}
     else if(commandLine.length()<100)commandLine+=ch;
@@ -412,6 +467,7 @@ void loop() {
   uint32_t nowMs=millis();
   pollPanelControls();
   uint32_t nowUs=micros();
-  if((int32_t)(nowUs-nextSampleUs)>=0){nextSampleUs+=kSamplePeriodUs;sampleInputs();if((bool)Serial)reportTelemetry();}
+  if((int32_t)(nowUs-nextScanUs)>=0){nextScanUs+=kScanPeriodUs;sampleInputs();}
+  if((int32_t)(nowUs-nextReportUs)>=0){nextReportUs+=kReportPeriodUs;if((bool)Serial)reportTelemetry();}
   if(nowMs-lastLedRefreshMs>=33){lastLedRefreshMs=nowMs;renderLeds(nowMs);}
 }
