@@ -1,0 +1,87 @@
+{
+  "release": "TROLLfx Front Panel Test V0.1",
+  "built_utc_date": "2026-11-25",
+  "build": {
+    "arduino_cli": "1.6.0",
+    "platform": "rp2040:rp2040@3.9.5",
+    "fqbn": "rp2040:rp2040:arduino_nano_connect",
+    "board": "Arduino Nano RP2040 Connect",
+    "board_options": {
+      "flash": "16777216_0",
+      "description": "16 MB flash, no filesystem"
+    },
+    "flash_bytes": 16777216,
+    "eeprom_sector": {
+      "start": "0x10FFF000",
+      "end_exclusive": "0x11000000",
+      "size_bytes": 4096
+    },
+    "libraries": {
+      "Encoder": "1.4.4",
+      "Adafruit NeoPXL8": "1.2.6",
+      "Adafruit NeoPixel": "1.12.0",
+      "Analog-Digital Multiplexers": "3.0.0"
+    },
+    "uses_eeprom": false,
+    "uses_flash_write_or_filesystem": false
+  },
+  "upstream_pin_assignments": {
+    "mux_signal_gpio": {
+      "A": 26,
+      "B": 29
+    },
+    "mux_select_gpio": [
+      19,
+      20,
+      21
+    ],
+    "linear_time_adc_gpio": {
+      "A": 27,
+      "B": 28
+    },
+    "outputs_gpio": [
+      13,
+      12,
+      1,
+      0
+    ],
+    "trigger_outputs_gpio": [
+      8,
+      5
+    ],
+    "sync_inputs_gpio": [
+      17,
+      18
+    ],
+    "encoder_gpio": [
+      23,
+      22
+    ],
+    "encoder_button_gpio": 24,
+    "follow_button_gpio": 7,
+    "led_data_gpio": 25,
+    "led_count": 23
+  },
+  "startup_arming": {
+    "analog_outputs_armed": false,
+    "trigger_outputs_armed": false,
+    "requires_explicit_arm_command": true
+  },
+  "uf2": {
+    "file": "FrontPanel-Test-V0.1.uf2",
+    "file_bytes": 175104,
+    "sha256": "036eac58413abf6793290b1895d376f869829a3621a9080334fb0e8cf2bd4c8d",
+    "payload_bytes": 87552,
+    "block_count": 342,
+    "address_ranges": [
+      [
+        "0x10000000",
+        "0x10015600"
+      ]
+    ],
+    "family_ids": [
+      "0xe48bff56"
+    ],
+    "eeprom_overlap": false
+  }
+}
